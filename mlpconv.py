@@ -66,9 +66,9 @@ class SparseInputDropoutLayer(DropoutLayer):
             return input * self._srng.binomial(input_shape, p=retain_prob,
                                                dtype=input.dtype)
 class SparseConvolutionDenseLayer(DenseLayer):
-    def __init__(self, incoming, H, **kwargs):
+    def __init__(self, incoming, H=None, **kwargs):
         super(SparseConvolutionDenseLayer, self).__init__(incoming, **kwargs)
-        self.H = H
+        #self.H = H
         
     def get_output_for(self, input, **kwargs):
         if not isinstance(input, (S.SparseVariable, S.SparseConstant,
@@ -77,7 +77,8 @@ class SparseConvolutionDenseLayer(DenseLayer):
         
         activation = S.dot(input, self.W)
         #do the convolution
-        activation = S.dot(self.H, activation)
+        H = kwargs.get('H')
+        activation = S.dot(H, activation)
 
         if self.b is not None:
             activation = activation + self.b.dimshuffle('x', 0)
@@ -85,15 +86,16 @@ class SparseConvolutionDenseLayer(DenseLayer):
 
 class ConvolutionDenseLayer(DenseLayer):
 
-    def __init__(self, incoming, H, **kwargs):
+    def __init__(self, incoming, H=None, **kwargs):
         super(ConvolutionDenseLayer, self).__init__(incoming, **kwargs)
-        self.H = H
+        #self.H = H
     
     def get_output_for(self, input, **kwargs):
         target_indices = kwargs.get('target_indices') 
         activation = T.dot(input, self.W)
         #do the convolution
-        activation = S.dot(self.H, activation)
+        H = kwargs.get('H')
+        activation = S.dot(H, activation)
 
         if self.b is not None:
             activation = activation + self.b.dimshuffle('x', 0)
@@ -131,7 +133,8 @@ class MLPCONV():
                  dropout_coefs=[0.5, 0.5],
                  early_stopping_max_down=100000,
                  loss_name='log',
-                 nonlinearity='rectify'):
+                 nonlinearity='rectify',
+                 dtype='float32'):
         self.n_epochs = n_epochs
         self.batch_size = batch_size
         self.init_parameters = init_parameters
@@ -145,6 +148,7 @@ class MLPCONV():
         self.early_stopping_max_down = early_stopping_max_down
         self.loss_name = loss_name
         self.nonlinearity = 'rectify'
+        self.dtype = dtype
 
     def fit(self, X, train_indices, dev_indices, test_indices, Y_train, Y_dev, Y_test, H):
         logging.info('building the network...' + ' hidden:' + str(self.add_hidden))
@@ -160,12 +164,14 @@ class MLPCONV():
         self.train_indices = train_indices
         self.dev_indices = dev_indices
         self.test_indices = test_indices
+        self.H = H
         
-        logging.info('input layer size: %d, hidden layer size: %d, output layer size: %d'  %(in_size, self.hidden_layer_size, out_size))
+        logging.info('input layer size: %d, hidden layer size: %d, output layer size: %d, dropout %s, regul %s, dtype %s'  %(in_size, self.hidden_layer_size, out_size, str(self.dropout_coefs), str(self.regul_coefs), self.dtype))
         # Prepare Theano variables for inputs and targets
 
-        self.X_sym = S.csr_matrix(name='inputs', dtype='float32')
+        self.X_sym = S.csr_matrix(name='inputs', dtype=self.dtype)
         self.target_indices_sym = T.ivector()
+        self.H_sym = S.csr_matrix(name='inputs', dtype=self.dtype)
         if self.complete_prob:
             self.y_sym = T.matrix()
         else:
@@ -185,9 +191,12 @@ class MLPCONV():
                                          input_var=self.X_sym)
         
         if self.drop_out:
+            logging.info('adding dropout with coefs %s' %str(self.dropout_coefs))
             l_in = SparseInputDropoutLayer(l_in, p=drop_out_in)
+        else:
+            logging.info('dropout is off')
     
-        l_hid1 = SparseConvolutionDenseLayer(l_in, H=H, 
+        l_hid1 = SparseConvolutionDenseLayer(l_in, #H=H, 
                                             num_units=self.hidden_layer_size,
                                             nonlinearity=nonlinearity,
                                             W=lasagne.init.GlorotUniform()
@@ -195,7 +204,8 @@ class MLPCONV():
         if self.drop_out:
             l_hid1 = lasagne.layers.dropout(l_hid1, p=drop_out_hid)
         
-        self.l_out = ConvolutionDenseLayer(l_hid1, H=H,
+        
+        self.l_out = ConvolutionDenseLayer(l_hid1, #H=H,
                                            num_units=out_size,
                                            nonlinearity=lasagne.nonlinearities.softmax,
                                            )
@@ -203,11 +213,11 @@ class MLPCONV():
         
         
     
-        self.eval_output = lasagne.layers.get_output(self.l_out, self.X_sym, target_indices=self.target_indices_sym, deterministic=True)
+        self.eval_output = lasagne.layers.get_output(self.l_out, self.X_sym, H=self.H_sym, target_indices=self.target_indices_sym, deterministic=True)
         self.eval_pred = self.eval_output.argmax(-1)
         #self.embedding = lasagne.layers.get_output(l_hid1, self.X_sym, H=H,  deterministic=True)        
         #self.f_get_embeddings = theano.function([self.X_sym], self.embedding)
-        self.output = lasagne.layers.get_output(self.l_out, self.X_sym, target_indices=self.target_indices_sym)
+        self.output = lasagne.layers.get_output(self.l_out, self.X_sym, H=self.H_sym, target_indices=self.target_indices_sym)
         self.pred = self.output.argmax(-1)
         if self.loss_name == 'log':
             loss = lasagne.objectives.categorical_crossentropy(self.output, self.y_sym)
@@ -243,12 +253,12 @@ class MLPCONV():
         #updates = lasagne.updates.sgd(loss, parameters, learning_rate=0.01)
         #updates = lasagne.updates.adagrad(loss, parameters, learning_rate=0.1, epsilon=1e-6)
         #updates = lasagne.updates.adadelta(loss, parameters, learning_rate=0.1, rho=0.95, epsilon=1e-6)
-        updates = lasagne.updates.adamax(loss, parameters, learning_rate=4e-3, beta1=0.9, beta2=0.999, epsilon=1e-8)
+        updates = lasagne.updates.adam(loss, parameters, learning_rate=4e-3, beta1=0.9, beta2=0.999, epsilon=1e-8)
         
-        self.f_train = theano.function([self.X_sym, self.y_sym, self.target_indices_sym], [loss, self.acc], updates=updates)
-        self.f_val = theano.function([self.X_sym, self.y_sym, self.target_indices_sym], [eval_loss, self.eval_acc])
-        self.f_predict = theano.function([self.X_sym, self.target_indices_sym], self.eval_pred)
-        self.f_predict_proba = theano.function([self.X_sym, self.target_indices_sym], self.eval_output)
+        self.f_train = theano.function([self.X_sym, self.y_sym, self.H_sym, self.target_indices_sym], [loss, self.acc], updates=updates)
+        self.f_val = theano.function([self.X_sym, self.y_sym, self.H_sym, self.target_indices_sym], [eval_loss, self.eval_acc])
+        self.f_predict = theano.function([self.X_sym, self.H_sym, self.target_indices_sym], self.eval_pred)
+        self.f_predict_proba = theano.function([self.X_sym, self.H_sym, self.target_indices_sym], self.eval_output)
         
         
 
@@ -274,25 +284,29 @@ class MLPCONV():
         n_validation_down = 0
         for n in xrange(self.n_epochs):
             x_batch, y_batch = self.X, Y_train
-            l_train, acc_train = self.f_train(x_batch, y_batch, self.train_indices)
-            l_val, acc_val = self.f_val(self.X, Y_dev, self.dev_indices)
-            if l_val < best_val_loss:
-                best_val_loss = l_val
-                best_val_acc = acc_val
-                best_params = lasagne.layers.get_all_param_values(self.l_out)
-                n_validation_down = 0
-            else:
-                #early stopping
-                n_validation_down += 1
-            logging.info('epoch ' + str(n) + ' ,train_loss ' + str(l_train) + ' ,acc ' + str(acc_train) + ' ,val_loss ' + str(l_val) + ' ,acc ' + str(acc_val) + ',best_val_acc ' + str(best_val_acc))
-            if n_validation_down > self.early_stopping_max_down:
-                logging.info('validation results went down. early stopping ...')
-                break
-        
+            l_train, acc_train = self.f_train(x_batch, y_batch, self.H, self.train_indices)
+            if n % 10 == 0:
+                l_val, acc_val = self.f_val(self.X, Y_dev, self.H, self.dev_indices)
+                if l_val < best_val_loss:
+                    best_val_loss = l_val
+                    best_val_acc = acc_val
+                    best_params = lasagne.layers.get_all_param_values(self.l_out)
+                    n_validation_down = 0
+                else:
+                    #early stopping
+                    n_validation_down += 1
+                logging.info('epoch ' + str(n) + ' ,train_loss ' + str(l_train) + ' ,acc ' + str(acc_train) + ' ,val_loss ' + str(l_val) + ' ,acc ' + str(acc_val) + ',best_val_acc ' + str(best_val_acc))
+                if n_validation_down > self.early_stopping_max_down:
+                    logging.info('validation results went down. early stopping ...')
+                    break
+        model_file = './data/Xshape1_' + str(X.shape[1]) + '_hidden_' + str(self.hidden_layer_size) + '_regul_' + str(self.regul_coefs[0]) + '_drop_' + str(self.dropout_coefs[0]) + '.pkl' 
+        logging.info('storing best parameters in %s ...' % model_file)
+        with open(model_file, 'wb') as fout:
+            pickle.dump(best_params, fout)
         lasagne.layers.set_all_param_values(self.l_out, best_params)
         
         logging.info('***************** final results based on best validation **************')
-        l_val, acc_val = self.f_val(self.X, Y_dev, self.dev_indices)
+        l_val, acc_val = self.f_val(self.X, Y_dev, self.H, self.dev_indices)
         logging.info('Best dev acc: %f' %(acc_val))
         
     def predict(self, dataset_partition):
@@ -302,7 +316,7 @@ class MLPCONV():
             indices = self.dev_indices
         elif dataset_partition == 'test':
             indices = self.test_indices
-        return self.f_predict(self.X, indices)
+        return self.f_predict(self.X, self.H, indices)
     
     def predict_proba(self, dataset_partition):
         if dataset_partition == 'train':
@@ -311,7 +325,7 @@ class MLPCONV():
             indices = self.dev_indices
         elif dataset_partition == 'test':
             indices = self.test_indices
-        return self.f_predict_proba(self.X, indices)
+        return self.f_predict_proba(self.X, self.H, indices)
     
     def accuracy(self, dataset_partition, y_true):
         if dataset_partition == 'train':
@@ -320,7 +334,7 @@ class MLPCONV():
             indices = self.dev_indices
         elif dataset_partition == 'test':
             indices = self.test_indices
-        _loss, _acc = self.f_val(self.X, y_true, indices)
+        _loss, _acc = self.f_val(self.X, y_true, self.H, indices)
         return _acc
     
     def score(self, X, dataset_partition, y_true):

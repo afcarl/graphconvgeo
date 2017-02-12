@@ -247,7 +247,6 @@ def efficient_collaboration_weighted_projected_graph2(B, nodes):
                 if n1 < n2:
                     if not G.has_edge(n1, n2):
                         G.add_edge(n1, n2)
-    logging.info('the graph is written in na.txt.gz')
     return G
 
 class DataLoader():

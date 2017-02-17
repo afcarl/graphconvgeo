@@ -255,10 +255,10 @@ class MLPCONV():
         #updates = lasagne.updates.adadelta(loss, parameters, learning_rate=0.1, rho=0.95, epsilon=1e-6)
         updates = lasagne.updates.adam(loss, parameters, learning_rate=4e-3, beta1=0.9, beta2=0.999, epsilon=1e-8)
         
-        self.f_train = theano.function([self.X_sym, self.y_sym, self.H_sym, self.target_indices_sym], [loss, self.acc], updates=updates)
-        self.f_val = theano.function([self.X_sym, self.y_sym, self.H_sym, self.target_indices_sym], [eval_loss, self.eval_acc])
-        self.f_predict = theano.function([self.X_sym, self.H_sym, self.target_indices_sym], self.eval_pred)
-        self.f_predict_proba = theano.function([self.X_sym, self.H_sym, self.target_indices_sym], self.eval_output)
+        self.f_train = theano.function([self.X_sym, self.y_sym, self.H_sym, self.target_indices_sym], [loss, self.acc], updates=updates, on_unused_input='warn')
+        self.f_val = theano.function([self.X_sym, self.y_sym, self.H_sym, self.target_indices_sym], [eval_loss, self.eval_acc], on_unused_input='warn')
+        self.f_predict = theano.function([self.X_sym, self.H_sym, self.target_indices_sym], self.eval_pred, on_unused_input='warn')
+        self.f_predict_proba = theano.function([self.X_sym, self.H_sym, self.target_indices_sym], self.eval_output, on_unused_input='warn')
         
         
 
@@ -282,10 +282,11 @@ class MLPCONV():
         best_val_loss = sys.maxint
         best_val_acc = 0.0
         n_validation_down = 0
+        report_k_epoch = 10
         for n in xrange(self.n_epochs):
             x_batch, y_batch = self.X, Y_train
             l_train, acc_train = self.f_train(x_batch, y_batch, self.H, self.train_indices)
-            if n % 10 == 0:
+            if n % report_k_epoch == 0:
                 l_val, acc_val = self.f_val(self.X, Y_dev, self.H, self.dev_indices)
                 if l_val < best_val_loss:
                     best_val_loss = l_val

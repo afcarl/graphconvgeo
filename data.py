@@ -390,11 +390,12 @@ class DataLoader():
             median_lon = np.median([p[1] for p in points]) 
             self.cluster_median[cluster] = (median_lat, median_lon)
         dev_locs = self.df_dev[['lat', 'lon']].values
-        test_locs = self.df_dev[['lat', 'lon']].values
+        test_locs = self.df_test[['lat', 'lon']].values
         nnbr = NearestNeighbors(n_neighbors=1, algorithm='brute', leaf_size=1, metric=haversine, n_jobs=4)
         nnbr.fit(np.array(self.cluster_median.values()))
         self.dev_classes = nnbr.kneighbors(dev_locs, n_neighbors=1, return_distance=False)[:, 0]
         self.test_classes = nnbr.kneighbors(test_locs, n_neighbors=1, return_distance=False)[:, 0]
+
         self.train_classes = clusters
         if self.one_host_labels:
             num_labels = np.max(self.train_classes) + 1

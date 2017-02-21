@@ -1,13 +1,4 @@
-'''
-Created on 27 Dec 2016
-
-@author: af
-'''
-'''
-Created on 22 Apr 2016
-@author: af
-'''
-
+from __future__ import print_function
 import pdb
 import numpy as np
 import sys
@@ -68,7 +59,9 @@ class SparseInputDropoutLayer(DropoutLayer):
 class SparseConvolutionDenseLayer(DenseLayer):
     def __init__(self, incoming, H=None, **kwargs):
         super(SparseConvolutionDenseLayer, self).__init__(incoming, **kwargs)
-        #self.H = H
+        self.H = H
+        #self.H = self.add_param(H, (H.shape[0], H.shape[1]), name='H')
+
         
     def get_output_for(self, input, **kwargs):
         if not isinstance(input, (S.SparseVariable, S.SparseConstant,
@@ -77,8 +70,7 @@ class SparseConvolutionDenseLayer(DenseLayer):
         
         activation = S.dot(input, self.W)
         #do the convolution
-        H = kwargs.get('H')
-        activation = S.dot(H, activation)
+        activation = S.dot(self.H, activation)
 
         if self.b is not None:
             activation = activation + self.b.dimshuffle('x', 0)
@@ -88,20 +80,25 @@ class ConvolutionDenseLayer(DenseLayer):
 
     def __init__(self, incoming, H=None, **kwargs):
         super(ConvolutionDenseLayer, self).__init__(incoming, **kwargs)
-        #self.H = H
+        self.H = H
+        #self.H = self.add_param(H, (H.shape[0], H.shape[1]), name='H')
     
     def get_output_for(self, input, **kwargs):
         target_indices = kwargs.get('target_indices') 
         activation = T.dot(input, self.W)
         #do the convolution
-        H = kwargs.get('H')
-        activation = S.dot(H, activation)
+        activation = S.dot(self.H, activation)
 
         if self.b is not None:
             activation = activation + self.b.dimshuffle('x', 0)
         activation = activation[target_indices, :]
         return self.nonlinearity(activation)
 
+def inspect_inputs(i, node, fn):
+    print(i, node, "input(s) shape(s):", [input[0].shape for input in fn.inputs], end='')
+
+def inspect_outputs(i, node, fn):
+    print(" output(s) shape(s):", [output[0].shape for output in fn.outputs])
 
 
 def iterate_minibatches(inputs, targets, batchsize, shuffle=False):
@@ -150,14 +147,21 @@ class MLPCONV():
         self.nonlinearity = 'rectify'
         self.dtype = dtype
 
-    def fit(self, X, train_indices, dev_indices, test_indices, Y_train, Y_dev, Y_test, H):
+    def fit(self, X, train_indices, dev_indices, test_indices, Y, H):
         logging.info('building the network...' + ' hidden:' + str(self.add_hidden))
         in_size = X.shape[1]
         drop_out_hid, drop_out_in = self.dropout_coefs
         if self.complete_prob:
+            Y_train = Y[train_indices, :]
+            Y_dev = Y[dev_indices, :]
+            Y_test = Y[test_indices, :]
             out_size = Y_train.shape[1]
         else:
-            out_size = len(set(Y_train.tolist()))
+            Y_train = Y[train_indices]
+            Y_dev = Y[dev_indices]
+            Y_test = Y[test_indices]
+            out_size = np.max(Y) + 1
+
         logging.info('output size is %d' %out_size)
         
         self.X = X
@@ -195,8 +199,8 @@ class MLPCONV():
             l_in = SparseInputDropoutLayer(l_in, p=drop_out_in)
         else:
             logging.info('dropout is off')
-    
-        l_hid1 = SparseConvolutionDenseLayer(l_in, #H=H, 
+        
+        l_hid1 = SparseConvolutionDenseLayer(l_in, H=H, 
                                             num_units=self.hidden_layer_size,
                                             nonlinearity=nonlinearity,
                                             W=lasagne.init.GlorotUniform()
@@ -205,7 +209,7 @@ class MLPCONV():
             l_hid1 = lasagne.layers.dropout(l_hid1, p=drop_out_hid)
         
         
-        self.l_out = ConvolutionDenseLayer(l_hid1, #H=H,
+        self.l_out = ConvolutionDenseLayer(l_hid1, H=l_hid1.H,
                                            num_units=out_size,
                                            nonlinearity=lasagne.nonlinearities.softmax,
                                            )
@@ -213,11 +217,11 @@ class MLPCONV():
         
         
     
-        self.eval_output = lasagne.layers.get_output(self.l_out, self.X_sym, H=self.H_sym, target_indices=self.target_indices_sym, deterministic=True)
+        self.eval_output = lasagne.layers.get_output(self.l_out, self.X_sym, target_indices=self.target_indices_sym, deterministic=True)
         self.eval_pred = self.eval_output.argmax(-1)
         #self.embedding = lasagne.layers.get_output(l_hid1, self.X_sym, H=H,  deterministic=True)        
         #self.f_get_embeddings = theano.function([self.X_sym], self.embedding)
-        self.output = lasagne.layers.get_output(self.l_out, self.X_sym, H=self.H_sym, target_indices=self.target_indices_sym)
+        self.output = lasagne.layers.get_output(self.l_out, self.X_sym, target_indices=self.target_indices_sym)
         self.pred = self.output.argmax(-1)
         if self.loss_name == 'log':
             loss = lasagne.objectives.categorical_crossentropy(self.output, self.y_sym)
@@ -249,16 +253,17 @@ class MLPCONV():
         parameters = lasagne.layers.get_all_params(self.l_out, trainable=True)
         
         
+        
         #updates = lasagne.updates.nesterov_momentum(loss, parameters, learning_rate=0.01, momentum=0.9)
         #updates = lasagne.updates.sgd(loss, parameters, learning_rate=0.01)
         #updates = lasagne.updates.adagrad(loss, parameters, learning_rate=0.1, epsilon=1e-6)
         #updates = lasagne.updates.adadelta(loss, parameters, learning_rate=0.1, rho=0.95, epsilon=1e-6)
         updates = lasagne.updates.adam(loss, parameters, learning_rate=4e-3, beta1=0.9, beta2=0.999, epsilon=1e-8)
         
-        self.f_train = theano.function([self.X_sym, self.y_sym, self.H_sym, self.target_indices_sym], [loss, self.acc], updates=updates, on_unused_input='warn')
-        self.f_val = theano.function([self.X_sym, self.y_sym, self.H_sym, self.target_indices_sym], [eval_loss, self.eval_acc], on_unused_input='warn')
-        self.f_predict = theano.function([self.X_sym, self.H_sym, self.target_indices_sym], self.eval_pred, on_unused_input='warn')
-        self.f_predict_proba = theano.function([self.X_sym, self.H_sym, self.target_indices_sym], self.eval_output, on_unused_input='warn')
+        self.f_train = theano.function([self.X_sym, self.y_sym, self.target_indices_sym], [loss, self.acc], updates=updates, on_unused_input='warn', mode=theano.compile.MonitorMode(pre_func=inspect_inputs, post_func=inspect_outputs))
+        self.f_val = theano.function([self.X_sym, self.y_sym, self.target_indices_sym], [eval_loss, self.eval_acc], on_unused_input='warn')
+        self.f_predict = theano.function([self.X_sym, self.target_indices_sym], self.eval_pred, on_unused_input='warn')
+        self.f_predict_proba = theano.function([self.X_sym, self.target_indices_sym], self.eval_output, on_unused_input='warn')
         
         
 
@@ -285,9 +290,9 @@ class MLPCONV():
         report_k_epoch = 10
         for n in xrange(self.n_epochs):
             x_batch, y_batch = self.X, Y_train
-            l_train, acc_train = self.f_train(x_batch, y_batch, self.H, self.train_indices)
+            l_train, acc_train = self.f_train(x_batch, y_batch, self.train_indices)
             if n % report_k_epoch == 0:
-                l_val, acc_val = self.f_val(self.X, Y_dev, self.H, self.dev_indices)
+                l_val, acc_val = self.f_val(self.X, Y_dev, self.dev_indices)
                 if l_val < best_val_loss:
                     best_val_loss = l_val
                     best_val_acc = acc_val
@@ -307,7 +312,7 @@ class MLPCONV():
         lasagne.layers.set_all_param_values(self.l_out, best_params)
         
         logging.info('***************** final results based on best validation **************')
-        l_val, acc_val = self.f_val(self.X, Y_dev, self.H, self.dev_indices)
+        l_val, acc_val = self.f_val(self.X, Y_dev, self.dev_indices)
         logging.info('Best dev acc: %f' %(acc_val))
         
     def predict(self, dataset_partition):
@@ -317,7 +322,7 @@ class MLPCONV():
             indices = self.dev_indices
         elif dataset_partition == 'test':
             indices = self.test_indices
-        return self.f_predict(self.X, self.H, indices)
+        return self.f_predict(self.X, indices)
     
     def predict_proba(self, dataset_partition):
         if dataset_partition == 'train':
@@ -326,7 +331,7 @@ class MLPCONV():
             indices = self.dev_indices
         elif dataset_partition == 'test':
             indices = self.test_indices
-        return self.f_predict_proba(self.X, self.H, indices)
+        return self.f_predict_proba(self.X, indices)
     
     def accuracy(self, dataset_partition, y_true):
         if dataset_partition == 'train':
@@ -335,7 +340,7 @@ class MLPCONV():
             indices = self.dev_indices
         elif dataset_partition == 'test':
             indices = self.test_indices
-        _loss, _acc = self.f_val(self.X, y_true, self.H, indices)
+        _loss, _acc = self.f_val(self.X, y_true, indices)
         return _acc
     
     def score(self, X, dataset_partition, y_true):

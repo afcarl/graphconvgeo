@@ -140,7 +140,7 @@ def main_justinputconv(data_home, **kwargs):
     
     clf = MLP(n_epochs=200, batch_size=batch_size, init_parameters=None, complete_prob=False, 
           add_hidden=True, regul_coefs=[regul, regul], save_results=False, hidden_layer_size=hidden_size, 
-          drop_out=True, drop_out_coefs=[0.5, 0.5], early_stopping_max_down=5, loss_name='log', nonlinearity='rectify')
+          drop_out=False, drop_out_coefs=[0.5, 0.5], early_stopping_max_down=5, loss_name='log', nonlinearity='rectify')
     clf.fit(X_train, Y_train, X_dev, Y_dev)
     print('Test classification accuracy is %f' % clf.accuracy(X_test, Y_test))
     y_pred = clf.predict(X_test)
@@ -213,26 +213,35 @@ def main_mlpconv(data, **kwargs):
     H, X_train, Y_train, X_dev, Y_dev, X_test, Y_test, U_train, U_dev, U_test, classLatMedian, classLonMedian, userLocation = data
     logging.info('stacking training, dev and test features and creating indices...')
     X = sp.sparse.vstack([X_train, X_dev, X_test])
+    if len(Y_train.shape) == 1:
+        Y = np.hstack((Y_train, Y_dev, Y_test))
+    else:
+        Y = np.vstack((Y_train, Y_dev, Y_test))
     X = X.astype(dtype)
     H = H.astype(dtype)
-    train_indices = np.asarray(range(0, X_train.shape[0])).astype('int32')
-    
-    dev_indices = np.asarray(range(X_train.shape[0], X_train.shape[0] + X_dev.shape[0])).astype('int32')
-    test_indices = np.asarray(range(X_train.shape[0] + X_dev.shape[0], X_train.shape[0] + X_dev.shape[0] + X_test.shape[0])).astype('int32')
-    logging.info('running mlp with graph conv...')
-    clf = MLPCONV(n_epochs=500, batch_size=batch_size, init_parameters=None, complete_prob=False, 
-          add_hidden=True, regul_coefs=[regul, regul], save_results=False, hidden_layer_size=hidden_size, 
-          drop_out=False, dropout_coefs=dropout_coefs, early_stopping_max_down=3, loss_name='log', nonlinearity='rectify', dtype=dtype)
-    #train_indices = np.asarray(range(0, 10000)).astype('int32')
-    #Y_train = Y_train[train_indices]
-    clf.fit(X, train_indices, dev_indices, test_indices, Y_train, Y_dev, Y_test, H)
-    print('Test classification accuracy is %f' % clf.accuracy(dataset_partition='test', y_true=Y_test.astype('int32')))
-    y_pred = clf.predict(dataset_partition='test')
-    geo_eval(Y_test, y_pred, U_test, classLatMedian, classLonMedian, userLocation)
 
-    print('Dev classification accuracy is %f' % clf.accuracy(dataset_partition='dev', y_true=Y_dev.astype('int32')))
-    y_pred = clf.predict(dataset_partition='dev')
-    geo_eval(Y_dev, y_pred, U_dev, classLatMedian, classLonMedian, userLocation)
+    for percentile in [1.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]:
+        logging.info('***********percentile %f ******************' %percentile)
+        train_indices = np.asarray(range(0, X_train.shape[0])).astype('int32')
+        train_indices = np.random.choice(train_indices, size=int(percentile * len(train_indices)))
+        np.random.seed(77)
+        #train_indices = np.asarray(range(0, int(percentile * X_train.shape[0]))).astype('int32')
+        dev_indices = np.asarray(range(X_train.shape[0], X_train.shape[0] + X_dev.shape[0])).astype('int32')
+        test_indices = np.asarray(range(X_train.shape[0] + X_dev.shape[0], X_train.shape[0] + X_dev.shape[0] + X_test.shape[0])).astype('int32')
+        logging.info('running mlp with graph conv...')
+        clf = MLPCONV(n_epochs=500, batch_size=batch_size, init_parameters=None, complete_prob=False, 
+              add_hidden=True, regul_coefs=[regul, regul], save_results=False, hidden_layer_size=hidden_size, 
+              drop_out=False, dropout_coefs=dropout_coefs, early_stopping_max_down=5, loss_name='log', nonlinearity='rectify', dtype=dtype)
+        #train_indices = np.asarray(range(0, 10000)).astype('int32')
+        #Y_train = Y_train[train_indices]
+        clf.fit(X, train_indices, dev_indices, test_indices, Y, H)
+        print('Test classification accuracy is %f' % clf.accuracy(dataset_partition='test', y_true=Y_test.astype('int32')))
+        y_pred = clf.predict(dataset_partition='test')
+        geo_eval(Y_test, y_pred, U_test, classLatMedian, classLonMedian, userLocation)
+    
+        print('Dev classification accuracy is %f' % clf.accuracy(dataset_partition='dev', y_true=Y_dev.astype('int32')))
+        y_pred = clf.predict(dataset_partition='dev')
+        geo_eval(Y_dev, y_pred, U_dev, classLatMedian, classLonMedian, userLocation)
 
 
 def tensorflow_mlpconv(data, **kwargs):
@@ -389,7 +398,7 @@ def tune(args):
             hidden_layer_size = 1500
             batch_size = 10000
             encoding = 'utf-8' 
-        regul = random.choice([1e-5, 1e-6, 1e-7, 5e-6, 5e-7])
+        regul = random.choice([1e-6, 1e-7])
         dropout_coefs = random.choice([[x, x] for x in [0.4, 0.5, 0.6] ])
         np.random.seed(77) 
         logging.info('#iter %d, regul %s, hidden %d, drop %s' %(i, str(regul), hidden_layer_size, str(dropout_coefs)))

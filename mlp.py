@@ -200,8 +200,12 @@ class MLP():
         if self.add_hidden:
             self.embedding = lasagne.layers.get_output(l_hid1, self.X_sym, deterministic=True)
             self.f_get_embeddings = theano.function([self.X_sym], self.embedding)
-        self.output = lasagne.layers.get_output(self.l_out, self.X_sym, deterministic=True)
+        self.output = lasagne.layers.get_output(self.l_out, self.X_sym, deterministic=False)
         self.pred = self.output.argmax(-1)
+        self.eval_output = lasagne.layers.get_output(self.l_out, self.X_sym, deterministic=True)
+        self.eval_pred = self.eval_output.argmax(-1)
+        eval_loss = lasagne.objectives.categorical_crossentropy(self.eval_output, self.y_sym)
+        eval_loss = eval_loss.mean()
         if self.loss_name == 'log':
             loss = lasagne.objectives.categorical_crossentropy(self.output, self.y_sym)
         elif self.loss_name == 'hinge':
@@ -219,12 +223,15 @@ class MLP():
             l1_penalty += lasagne.regularization.regularize_layer_params(l_hid1, l1) * regul_coef_hid * l1_share_hid
             l2_penalty += lasagne.regularization.regularize_layer_params(l_hid1, l2) * regul_coef_hid * (1-l1_share_hid)
         loss = loss + l1_penalty + l2_penalty
-    
+        eval_loss = eval_loss + l1_penalty + l2_penalty
+        
         if self.complete_prob:
             self.y_sym_one_hot = self.y_sym.argmax(-1)
             self.acc = T.mean(T.eq(self.pred, self.y_sym_one_hot))
+            self.eval_ac = T.mean(T.eq(self.eval_pred, self.y_sym_one_hot))
         else:
             self.acc = T.mean(T.eq(self.pred, self.y_sym))
+            self.eval_acc = T.mean(T.eq(self.eval_pred, self.y_sym))
         if self.init_parameters:
             lasagne.layers.set_all_param_values(self.l_out, self.init_parameters)
         parameters = lasagne.layers.get_all_params(self.l_out, trainable=True)
@@ -237,9 +244,9 @@ class MLP():
         updates = lasagne.updates.adam(loss, parameters, learning_rate=0.002, beta1=0.9, beta2=0.999, epsilon=1e-8)
         
         self.f_train = theano.function([self.X_sym, self.y_sym], [loss, self.acc], updates=updates)
-        self.f_val = theano.function([self.X_sym, self.y_sym], [loss, self.acc])
-        self.f_predict = theano.function([self.X_sym], self.pred)
-        self.f_predict_proba = theano.function([self.X_sym], self.output)
+        self.f_val = theano.function([self.X_sym, self.y_sym], [eval_loss, self.eval_acc])
+        self.f_predict = theano.function([self.X_sym], self.eval_pred)
+        self.f_predict_proba = theano.function([self.X_sym], self.eval_output)
         
         
         X_train = X_train.astype('float32')

@@ -315,7 +315,7 @@ def tensorflow_mlpconv(data, **kwargs):
                 out_layer = tf.sparse_tensor_dense_matmul(H, out_layer)
                 out_layer = out_layer + biases['b_out']
                 return tf.gather(out_layer, indices)
-            # Store layers weight & bias
+            # Store lasagne_layers weight & bias
             weights = {
                 'w_h1': tf.Variable(tf.random_normal([input_dim, n_hidden_1])),
                 'w_out': tf.Variable(tf.random_normal([n_hidden_1, n_classes]))

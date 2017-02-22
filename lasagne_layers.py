@@ -14,7 +14,7 @@ from lasagne.layers import DenseLayer, DropoutLayer
 
 '''
 These sparse classes are copied from https://github.com/Lasagne/Lasagne/pull/596/commits
-
+'''
 class SparseInputDenseLayer(DenseLayer):
     def get_output_for(self, input, **kwargs):
         if not isinstance(input, (S.SparseVariable, S.SparseConstant,
@@ -48,24 +48,40 @@ class SparseInputDropoutLayer(DropoutLayer):
 
             return input * self._srng.binomial(input_shape, p=retain_prob,
                                                dtype=input.dtype)
-class SparseInputConvolutionDenseLayer(DenseLayer):
-    def get_output_for(self, input, H, **kwargs):
+class SparseConvolutionDenseLayer(DenseLayer):
+    def __init__(self, incoming, H=None, **kwargs):
+        super(SparseConvolutionDenseLayer, self).__init__(incoming, **kwargs)
+        self.H = H
+        #self.H = self.add_param(H, (H.shape[0], H.shape[1]), name='H')
+
+        
+    def get_output_for(self, input, **kwargs):
         if not isinstance(input, (S.SparseVariable, S.SparseConstant,
                                   S.sharedvar.SparseTensorSharedVariable)):
             raise ValueError("Input for this layer must be sparse")
-        #do the convolution
-        input = S.dot(H, input)
+        
         activation = S.dot(input, self.W)
+        #do the convolution
+        activation = S.dot(self.H, activation)
+
         if self.b is not None:
             activation = activation + self.b.dimshuffle('x', 0)
         return self.nonlinearity(activation)
 
 class ConvolutionDenseLayer(DenseLayer):
-    def get_output_for(self, input, H, **kwargs):   
-        #do the convolution
-        input = S.dot(H, input).toarray()
+
+    def __init__(self, incoming, H=None, **kwargs):
+        super(ConvolutionDenseLayer, self).__init__(incoming, **kwargs)
+        self.H = H
+        #self.H = self.add_param(H, (H.shape[0], H.shape[1]), name='H')
+    
+    def get_output_for(self, input, **kwargs):
+        target_indices = kwargs.get('target_indices') 
         activation = T.dot(input, self.W)
+        #do the convolution
+        activation = S.dot(self.H, activation)
+
         if self.b is not None:
             activation = activation + self.b.dimshuffle('x', 0)
+        activation = activation[target_indices, :]
         return self.nonlinearity(activation)
-'''

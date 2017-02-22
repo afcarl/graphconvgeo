@@ -96,9 +96,11 @@ class ConvolutionDenseLayer(DenseLayer):
 
 def inspect_inputs(i, node, fn):
     print(i, node, "input(s) shape(s):", [input[0].shape for input in fn.inputs], end='')
+    #print(i, node, "input(s) stride(s):", [input.strides for input in fn.inputs], end='')
 
 def inspect_outputs(i, node, fn):
     print(" output(s) shape(s):", [output[0].shape for output in fn.outputs])
+    #print(" output(s) stride(s):", [output.strides for output in fn.outputs])
 
 
 def iterate_minibatches(inputs, targets, batchsize, shuffle=False):
@@ -219,7 +221,7 @@ class MLPCONV():
     
         self.eval_output = lasagne.layers.get_output(self.l_out, self.X_sym, target_indices=self.target_indices_sym, deterministic=True)
         self.eval_pred = self.eval_output.argmax(-1)
-        #self.embedding = lasagne.layers.get_output(l_hid1, self.X_sym, H=H,  deterministic=True)        
+        #self.embedding = lasagne.lasagne_layers.get_output(l_hid1, self.X_sym, H=H,  deterministic=True)        
         #self.f_get_embeddings = theano.function([self.X_sym], self.embedding)
         self.output = lasagne.layers.get_output(self.l_out, self.X_sym, target_indices=self.target_indices_sym)
         self.pred = self.output.argmax(-1)
@@ -233,7 +235,7 @@ class MLPCONV():
         l1_share_out = 0.5
         l1_share_hid = 0.5
         regul_coef_out, regul_coef_hid = self.regul_coefs
-        logging.info('regul coefficient for output and hidden layers are ' + str(self.regul_coefs))
+        logging.info('regul coefficient for output and hidden lasagne_layers are ' + str(self.regul_coefs))
         l1_penalty = lasagne.regularization.regularize_layer_params(self.l_out, l1) * regul_coef_out * l1_share_out
         l2_penalty = lasagne.regularization.regularize_layer_params(self.l_out, l2) * regul_coef_out * (1-l1_share_out)
 

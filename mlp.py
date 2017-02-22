@@ -216,7 +216,7 @@ class MLP():
         l1_share_out = 0.5
         l1_share_hid = 0.5
         regul_coef_out, regul_coef_hid = self.regul_coefs
-        logging.info('regul coefficient for output and hidden layers are ' + str(self.regul_coefs))
+        logging.info('regul coefficient for output and hidden lasagne_layers are ' + str(self.regul_coefs))
         l1_penalty = lasagne.regularization.regularize_layer_params(self.l_out, l1) * regul_coef_out * l1_share_out
         l2_penalty = lasagne.regularization.regularize_layer_params(self.l_out, l2) * regul_coef_out * (1-l1_share_out)
         if self.add_hidden:

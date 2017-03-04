@@ -251,17 +251,20 @@ def efficient_collaboration_weighted_projected_graph2(B, nodes):
 
 class DataLoader():
     def __init__(self, data_home, bucket_size=50, encoding='utf-8', 
-                 celebrity_threshold=10, one_hot_labels=False, mindf=10,
-                 norm='l2', idf=True, btf=True):
+                 celebrity_threshold=10, one_hot_labels=False, mindf=10, maxdf=0.2,
+                 norm='l2', idf=True, btf=True, tokenizer=None):
         self.data_home = data_home
         self.bucket_size = bucket_size
         self.encoding = encoding
         self.celebrity_threshold = celebrity_threshold
         self.one_host_labels = one_hot_labels
         self.mindf = mindf
+        self.maxdf = maxdf
         self.norm = norm
         self.idf = idf
         self.btf = btf
+        self.tokenizer = tokenizer
+        
     def load_data(self):
         logging.info('loading the dataset from %s' %self.data_home)
         train_file = os.path.join(self.data_home, 'user_info.train.gz')
@@ -368,10 +371,11 @@ class DataLoader():
 
         
     def tfidf(self):
-        self.vectorizer = TfidfVectorizer(token_pattern=r'(?u)[^@]\b\w\w+\b', use_idf=self.idf, norm=self.norm, binary=self.btf
-                                     , sublinear_tf=False, min_df=self.mindf, max_df=0.2, ngram_range=(1, 1), stop_words='english', 
+        self.vectorizer = TfidfVectorizer(tokenizer=self.tokenizer, token_pattern=r'(?u)(?<![#@])\b\w+\b', use_idf=self.idf, 
+                                    norm=self.norm, binary=self.btf, sublinear_tf=False, 
+                                    min_df=self.mindf, max_df=self.maxdf, ngram_range=(1, 1), stop_words='english', 
                                      vocabulary=None, encoding=self.encoding, dtype='float32')
-        
+        logging.info(self.vectorizer)
         self.X_train = self.vectorizer.fit_transform(self.df_train.text.values)
         self.X_dev = self.vectorizer.transform(self.df_dev.text.values)
         self.X_test = self.vectorizer.transform(self.df_test.text.values)

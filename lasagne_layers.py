@@ -90,14 +90,14 @@ class ConvolutionDenseLayer(DenseLayer):
 
 class GaussianRBFLayer(Layer):
 
-    def __init__(self, incoming, num_units, **kwargs):
+    def __init__(self, incoming, num_units, mus=None, **kwargs):
         super(GaussianRBFLayer, self).__init__(incoming, **kwargs)
         #self.H = H
         #self.H = self.add_param(H, (H.shape[0], H.shape[1]), name='H')
         self.name = 'GaussianRBFLayer'
         self.num_units = num_units
-        if kwargs.get('mus', None):
-            self.mus_init = kwargs.get('mus')
+        if mus is not None:
+            self.mus_init = mus
         else:
             self.mus_init = np.random.randn(self.num_units, 2).astype('float32')
         
@@ -118,14 +118,14 @@ class GaussianRBFLayer(Layer):
 
 class BivariateGaussianLayer(Layer):
 
-    def __init__(self, incoming, num_units, **kwargs):
+    def __init__(self, incoming, num_units, mus=None, **kwargs):
         super(BivariateGaussianLayer, self).__init__(incoming, **kwargs)
         #self.H = H
         #self.H = self.add_param(H, (H.shape[0], H.shape[1]), name='H')
         self.name = 'BivariateGaussianLayer'
         self.num_units = num_units
-        if kwargs.get('mus', None):
-            self.mus_init = kwargs.get('mus')
+        if mus is not None:
+            self.mus_init = mus
         else:
             self.mus_init = np.random.randn(self.num_units, 2).astype('float32')
         

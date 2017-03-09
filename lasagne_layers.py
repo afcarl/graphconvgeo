@@ -116,13 +116,13 @@ class GaussianRBFLayer(Layer):
         a = T.exp(-difnorm * (self.sigmas**2))
         return a
 
-class BivariateGaussianLayer(Layer):
+class DiagonalBivariateGaussianLayer(Layer):
 
     def __init__(self, incoming, num_units, mus=None, **kwargs):
-        super(BivariateGaussianLayer, self).__init__(incoming, **kwargs)
+        super(DiagonalBivariateGaussianLayer, self).__init__(incoming, **kwargs)
         #self.H = H
         #self.H = self.add_param(H, (H.shape[0], H.shape[1]), name='H')
-        self.name = 'BivariateGaussianLayer'
+        self.name = 'DiagonalBivariateGaussianLayer'
         self.num_units = num_units
         if mus is not None:
             self.mus_init = mus
@@ -145,7 +145,7 @@ class BivariateGaussianLayer(Layer):
         sigmas2 = sigmas ** 2
         mus = self.mus[np.newaxis, :, :]
         X = input[:, np.newaxis, :]
-        diff = (X-mus) ** 2
+        diff = (X - mus) ** 2
         diffsigma = diff / sigmas2
         diffsigmanorm = T.sum(diffsigma, axis=-1)
         expterm = T.exp(-0.5 * diffsigmanorm)
@@ -158,3 +158,53 @@ class BivariateGaussianLayer(Layer):
         difnorm = T.sum((C-X)**2, axis=-1)
         a = T.exp(-difnorm * (self.sigmas**2))
         return a
+
+class BivariateGaussianLayer(Layer):
+
+    def __init__(self, incoming, num_units, mus=None, **kwargs):
+        super(BivariateGaussianLayer, self).__init__(incoming, **kwargs)
+        #self.H = H
+        #self.H = self.add_param(H, (H.shape[0], H.shape[1]), name='H')
+        self.name = 'BivariateGaussianLayer'
+        self.num_units = num_units
+        if mus is not None:
+            mus_init = mus
+        else:
+            mus_init = np.random.randn(self.num_units, 2).astype('float32')
+        
+        sigmas_init = np.abs(np.random.randn(self.num_units, 2).reshape((self.num_units,2))).astype('float32')
+        sigma12_init = self.sigmas_init = np.random.randn(self.num_units,).reshape((self.num_units,)).astype('float32')
+        
+        self.mus = self.add_param(mus_init, mus_init.shape, name='mus')
+        self.sigmas = self.add_param(sigmas_init, sigmas_init.shape, name='sigmas')
+        self.sigma12 = self.add_param(sigma12_init, sigma12_init.shape, name='sigma12')
+
+    def get_output_shape_for(self, input_shape):
+        return (input_shape[0], self.num_units)        
+    
+    def get_output_for(self, input, **kwargs):
+        #make sure sigma is positive and nonzero softplus(x) (0, +inf)
+        sigmas = T.nnet.softplus(self.sigmas)
+        sigmainvs = 1.0 / sigmas
+        sigmainvprods = sigmainvs[:, 0] * sigmainvs[:, 1]
+        sigmas2 = sigmas ** 2
+        #convert to 3d so that we can broadcast input n_batchxdimension, hidden n_hidxdimension to n_batchx1
+        mus = self.mus[np.newaxis, :, :]
+        X = input[:, np.newaxis, :]
+        #difference between input and means for each dimension
+        diff = X-mus
+        #multiply x-mu1 , x-mu2 the result should be number_of_samples x number_of_hidden
+        diffprod = T.prod(diff, axis=-1)
+        #correlation x, y member of (-1, 1)
+        cor12 = T.nnet.nnet.softsign(self.sigma12 * sigmainvprods)
+        #power 2 of cor12
+        cor122 = cor12 **2
+        diff2 = diff ** 2
+        diffsigma = diff2 / sigmas2
+        diffsigmanorm = T.sum(diffsigma, axis=-1)
+        z = diffsigmanorm - 2 * cor12 * diffprod * sigmainvprods
+        oneminuscor122inv = 1.0 / (1.0 - cor122)
+        expterm = T.exp(-0.5 * z * oneminuscor122inv)
+        probs = (0.5 / np.pi) * sigmainvprods * T.sqrt(oneminuscor122inv) * expterm
+        return probs
+

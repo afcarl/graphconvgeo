@@ -12,9 +12,12 @@ from matplotlib import ticker
 import matplotlib.pyplot as plt
 from matplotlib.mlab import griddata
 from matplotlib.patches import Polygon as MplPolygon
+import seaborn as sns
+sns.set(style="white")
 import operator
 import argparse
 import sys
+from scipy.spatial import ConvexHull
 import os
 import pdb
 import random
@@ -44,7 +47,7 @@ from scipy import stats
 from twokenize import tokenize
 from mpl_toolkits.basemap import Basemap, cm, maskoceans
 from scipy.interpolate import griddata as gd
-from lasagne_layers import SparseInputDenseLayer, GaussianRBFLayer, BivariateGaussianLayer
+from lasagne_layers import SparseInputDenseLayer, GaussianRBFLayer, DiagonalBivariateGaussianLayer, BivariateGaussianLayer
 from shapely.geometry import MultiPoint, Point, Polygon
 import shapefile
 from utils import short_state_names, stop_words, get_us_city_name
@@ -139,7 +142,7 @@ class NNModel():
                 logging.info('adding rbf layer...')
                 l_hid = GaussianRBFLayer(l_in, num_units=self.hidden_layer_sizes[0], mus=self.mus)
             elif self.bigaus:
-                logging.info('adding diagonal bivariate gaussian layer...')
+                logging.info('adding bivariate gaussian layer...')
                 l_hid = BivariateGaussianLayer(l_in, num_units=self.hidden_layer_sizes[0], mus=self.mus)
             else:
                 l_hid = lasagne.layers.DenseLayer(l_in, num_units=self.hidden_layer_sizes[0], 
@@ -152,10 +155,10 @@ class NNModel():
             self.l_out_autoencoder = lasagne.layers.DenseLayer(l_hid, num_units=self.input_size, 
                                                        nonlinearity=lasagne.nonlinearities.softmax,
                                                        W=lasagne.init.GlorotUniform())
-        if len(self.hidden_layer_sizes) > 1 and not self.rbf:
+        if len(self.hidden_layer_sizes) > 1:
             for h_size in self.hidden_layer_sizes[1:]:
                 l_hid = lasagne.layers.DenseLayer(l_hid, num_units=h_size, 
-                                                   nonlinearity=lasagne.nonlinearities.softmax,
+                                                   nonlinearity=lasagne.nonlinearities.rectify,
                                                    W=lasagne.init.GlorotUniform())
                 if self.drop_out and self.dropout_coef > 0:
                     l_hid = lasagne.layers.dropout(l_hid, p=self.dropout_coef)
@@ -172,7 +175,7 @@ class NNModel():
         #self.embedding = lasagne.lasagne_layers.get_output(l_hid1, self.X_sym, H=H,  deterministic=True)        
         #self.f_get_embeddings = theano.function([self.X_sym], self.embedding)
         self.output = lasagne.layers.get_output(self.l_out, self.X_sym)
-        
+        #self.debug_output = lasagne.layers.get_output(l_hid, self.X_sym)
         #self.pred = self.output.argmax(-1)
         loss = lasagne.objectives.categorical_crossentropy(self.output, self.Y_sym)
         loss = loss.mean()
@@ -212,7 +215,8 @@ class NNModel():
         self.f_train = theano.function([self.X_sym, self.Y_sym], loss, updates=updates, on_unused_input='warn')
         self.f_val = theano.function([self.X_sym, self.Y_sym], eval_loss, on_unused_input='warn')
         self.f_cross_entropy_loss = theano.function([self.X_sym, self.Y_sym], eval_cross_entropy_loss, on_unused_input='warn')
-        self.f_predict_proba = theano.function([self.X_sym], self.eval_output, on_unused_input='warn')   
+        self.f_predict_proba = theano.function([self.X_sym], self.eval_output, on_unused_input='warn') 
+        #self.f_debug_output =  theano.function([self.X_sym], self.debug_output, on_unused_input='warn')
         if self.autoencoder:
             self.f_predict_autoencoder = theano.function([self.X_sym], self.autoencoder_eval_output, on_unused_input='warn')        
 
@@ -231,7 +235,7 @@ class NNModel():
             yield inputs[excerpt], targets[excerpt]       
     
     def fit(self, X_train, Y_train, X_dev, Y_dev, X_test, Y_test):
-        model_file = './data/loc2lang_model_' + str(X_train.shape)  + 'encoder_' + \
+        model_file = './data/loc2lang_model_' + str(self.output_size) + '_' + str(self.hidden_layer_sizes)  + '_encoder_' + \
         str(self.autoencoder) + '_sparse_' + str(self.sparse) +  '_rbf_' + str(self.rbf) + '_bigaus_' + str(self.bigaus) + '.pkl'
         if self.reload:
             if path.exists(model_file):
@@ -254,6 +258,7 @@ class NNModel():
             if l_val < best_val_loss and (best_val_loss - l_val) > (0.0001 * l_val):
                 best_val_loss = l_val
                 best_params = lasagne.layers.get_all_param_values(self.l_out)
+                logging.info('first mu %s first sigma %s' %(str(best_params[0][0, :]), str(best_params[1][0, :])))
                 n_validation_down = 0
             else:
                 n_validation_down += 1
@@ -323,7 +328,7 @@ def load_data(data_home, **kwargs):
     dtype = kwargs.get('dtype', 'float32')
     one_hot_label = kwargs.get('onehot', False)
     grid_transform = kwargs.get('grid', False)
-    normalize_words = kwargs.get('norm', True)
+    normalize_words = kwargs.get('norm', False)
     city_stops = kwargs.get('city_stops', True)
     if city_stops:
         logging.info('adding city names to stop words')
@@ -398,6 +403,7 @@ def train(data, **kwargs):
     if rbf or bigaus:
         logging.info('initializing mus by clustering training points')
         mus = get_cluster_centers(loc_train, n_cluster=hid_size)
+        logging.info('first mu is %s' %str(mus[0, :]))
     model = NNModel(n_epochs=1000, batch_size=batch_size, regul_coef=regul, 
                     input_size=input_size, output_size=output_size, hidden_layer_sizes=[hid_size, hid_size], 
                     drop_out=True, dropout_coef=dropout_coef, early_stopping_max_down=10, 
@@ -408,20 +414,24 @@ def train(data, **kwargs):
     k = 50
     with open('./data/cities.json', 'r') as fin:
         cities = json.load(fin)
-    
-    cities = cities[0:10]
-    for city in cities:
-        name = city['city']
-        lat, lon = city['latitude'], city['longitude']
-        loc = np.array([[lat, lon]]).astype('float32')
-        #grid representation
-        if grid_transform:
-            loc = grid_representation(input=loc)
-        preds = model.predict(loc)
-        topword_indices = np.argsort(preds)[0][::-1][:k]
-        topwords = [vocab[i] for i in topword_indices]
-        logging.info(name)
-        logging.info(str(topwords))
+    local_word_file = './data/local_words_'  + str(W_train.shape)+ '_' + str(hid_size) + '.txt'
+    with codecs.open(local_word_file, 'w', encoding='utf-8') as fout:
+        cities = cities[0:100]
+        for city in cities:
+            name = city['city']
+            lat, lon = city['latitude'], city['longitude']
+            loc = np.array([[lat, lon]]).astype('float32')
+            #grid representation
+            if grid_transform:
+                loc = grid_representation(input=loc)
+            preds = model.predict(loc)
+            topword_indices = np.argsort(preds)[0][::-1][:k]
+            topwords = [vocab[i] for i in topword_indices]
+            #logging.info(name)
+            #logging.info(str(topwords))
+            fout.write('\n*****%s*****\n' %name)
+            fout.write(str(topwords))
+            
     
     
     # us bounding box (-124.848974, 24.396308) - (-66.885444, 49.384358)
@@ -493,15 +503,15 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
     with open(info_file, 'rb') as fin:
         coords, preds, vocab = pickle.load(fin)
     vocabset = set(vocab)
-    local_words = get_local_words(preds, vocab, k=200)
+    local_words = get_local_words(preds, vocab, k=500)
     logging.info(local_words)
-    topk_words = local_words
+    topk_words = local_words[0:100]
     
-    add_cities = False
+    add_cities = True
     if add_cities:
         with open('./data/cities.json', 'r') as fin:
             cities = json.load(fin)
-        cities = cities[0:50]
+        cities = cities[0:100]
         for city in cities:
             name = city['city'].lower()
             topk_words.append(name)
@@ -514,34 +524,61 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
             wi += 1
             index = vocab.index(word)
             scores = np.log(preds[:, index])
+            
             m = Basemap(llcrnrlat=lllat,
             urcrnrlat=urlat,
             llcrnrlon=lllon,
             urcrnrlon=urlon,
             resolution='i', projection='cyl')
-            #m.drawmapboundary(fill_color = 'white')
+            '''
+            m = Basemap(llcrnrlon=-119,llcrnrlat=22,urcrnrlon=-64,urcrnrlat=49,
+            projection='lcc',lat_1=33,lat_2=45,lon_0=-95, resolution='i')
+            '''
+            m.drawmapboundary(fill_color = 'white')
             #m.drawcoastlines(linewidth=0.5)
             m.drawcountries(linewidth=0.2)
-            m.drawstates(linewidth=0.2)
+            #m.drawstates(linewidth=0.2)
             #m.fillcontinents(color='white', lake_color='#0000ff', zorder=2)
             #m.drawrivers(color='#0000ff')
-            m.drawlsmask(land_color='white',ocean_color="navy", lakes=True)
+            m.drawlsmask(land_color='gray',ocean_color="#b0c4de", lakes=True)
             #m.drawcounties()
-            shp_info = m.readshapefile('./data/us_states_st99/st99_d00','states',drawbounds=True)
+            shp_info = m.readshapefile('./data/us_states_st99/st99_d00','states',drawbounds=True, zorder=0)
             printed_names = []
             ax = plt.gca()
+            ax.xaxis.set_visible(False) 
+            ax.yaxis.set_visible(False) 
+            for spine in ax.spines.itervalues(): 
+                spine.set_visible(False) 
             state_names_set = set(short_state_names.values())
+            mi_index = 0
+            wi_index = 0
             for shapedict,state in zip(m.states_info, m.states):
+                draw_state_name = True
                 if shapedict['NAME'] not in state_names_set: continue
                 short_name = short_state_names.keys()[short_state_names.values().index(shapedict['NAME'])]
-                if short_name in printed_names: continue
+                if short_name in printed_names and short_name not in ['MI', 'WI']: 
+                    continue
+                if short_name == 'MI':
+                    if mi_index != 3:
+                        draw_state_name = False
+                    mi_index += 1
+                if short_name == 'WI':
+                    if wi_index != 2:
+                        draw_state_name = False
+                    wi_index += 1
+                    
                 # center of polygon
                 x, y = np.array(state).mean(axis=0)
-                #poly = MplPolygon(state,facecolor='white',edgecolor='black')
+                hull = ConvexHull(state)
+                hull_points = np.array(state)[hull.vertices]
+                x, y = hull_points.mean(axis=0)
+                poly = MplPolygon(state,facecolor='lightgray',edgecolor='black')
                 #x, y = np.median(np.array(state), axis=0)
                 # You have to align x,y manually to avoid overlapping for little states
-                plt.text(x+.1, y, short_name, ha="center", fontsize=5)
-                #ax.add_patch(poly)
+                if draw_state_name:
+                    plt.text(x+.1, y, short_name, ha="center", fontsize=5)
+                ax.add_patch(poly)
+                #pdb.set_trace()
                 printed_names += [short_name,] 
             mlon, mlat = m(*(coords[:,1], coords[:,0]))
             # grid data
@@ -564,17 +601,22 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
     
                 #Remove the lakes and oceans
                 data = maskoceans(xi, yi, zi)
-                conf = m.contourf(xi, yi, data, cmap=plt.get_cmap('coolwarm'))
-                #con = m.contour(xi, yi, data, cmap=plt.get_cmap('coolwarm'))
-                cbar = m.colorbar(conf,location='right',pad="3%")
+                #conf = m.contourf(xi, yi, data, cmap=plt.get_cmap('coolwarm'))
+                con = m.contour(xi, yi, data, 3, cmap=plt.get_cmap('YlOrRd'), linewidths=1)
+                #con = m.contour(x, y, z, 3, cmap=plt.get_cmap('YlOrRd'), tri=True, linewidths=1)
+                #conf = m.contourf(x, y, z, 3, cmap=plt.get_cmap('coolwarm'), tri=True)
+                cbar = m.colorbar(con,location='right',pad="3%")
                 #plt.setp(cbar.ax.get_yticklabels(), visible=False)
                 #cbar.ax.tick_params(axis=u'both', which=u'both',length=0)
                 #cbar.ax.set_yticklabels(['low', 'high'])
-                tick_locator = ticker.MaxNLocator(nbins=9)
+                tick_locator = ticker.MaxNLocator(nbins=3)
                 cbar.locator = tick_locator
                 cbar.update_ticks()
                 cbar.ax.tick_params(labelsize=6) 
                 cbar.set_label('logprob')
+                for line in cbar.lines: 
+                    line.set_linewidth(20)
+
             else:
                 m.scatter(mlon, mlat)
             

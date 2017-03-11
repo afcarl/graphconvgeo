@@ -7,6 +7,7 @@ in the output and visualise that).
 @author: af
 '''
 import matplotlib as mpl
+import re
 mpl.use('Agg')
 from matplotlib import ticker
 import matplotlib.pyplot as plt
@@ -39,7 +40,7 @@ import json
 import codecs
 import pickle
 import gzip
-from collections import OrderedDict
+from collections import OrderedDict, Counter
 from sklearn.preprocessing import normalize
 from haversine import haversine
 from _collections import defaultdict
@@ -120,6 +121,7 @@ class NNModel():
         logging.info('building nn model with hidden size %s and output size %d input_sparse %s' % (str(self.hidden_layer_sizes), self.output_size, str(self.sparse)))
         self.build()
         
+        
     def build(self):
         if self.sparse:
             self.X_sym = S.csr_matrix(name='inputs', dtype=self.dtype)
@@ -180,7 +182,7 @@ class NNModel():
         loss = lasagne.objectives.categorical_crossentropy(self.output, self.Y_sym)
         loss = loss.mean()
         eval_loss = lasagne.objectives.categorical_crossentropy(self.eval_output, self.Y_sym)
-        eval_loss = eval_loss.mean() 
+        eval_loss = eval_loss.mean()
         eval_cross_entropy_loss = lasagne.objectives.categorical_crossentropy(self.eval_output, self.Y_sym)
         eval_cross_entropy_loss = eval_cross_entropy_loss.mean()
         
@@ -197,13 +199,13 @@ class NNModel():
             loss += autoencoder_loss
         
         if self.regul_coef:
-            l1_share_out = 0.5
+            l1_share_out = 0.0
             l1_share_hid = 0.5
             regul_coef_out, regul_coef_hid = self.regul_coef, self.regul_coef
             logging.info('regul coefficient for output and hidden lasagne_layers is ' + str(self.regul_coef))
             l1_penalty = lasagne.regularization.regularize_layer_params(self.l_out, l1) * regul_coef_out * l1_share_out
             l2_penalty = lasagne.regularization.regularize_layer_params(self.l_out, l2) * regul_coef_out * (1-l1_share_out)
-            if not self.rbf:
+            if not self.rbf and not self.bigaus:
                 l1_penalty += lasagne.regularization.regularize_layer_params(l_hid, l1) * regul_coef_hid * l1_share_hid
                 l2_penalty += lasagne.regularization.regularize_layer_params(l_hid, l2) * regul_coef_hid * (1-l1_share_hid)
             loss = loss + l1_penalty + l2_penalty
@@ -258,7 +260,8 @@ class NNModel():
             if l_val < best_val_loss and (best_val_loss - l_val) > (0.0001 * l_val):
                 best_val_loss = l_val
                 best_params = lasagne.layers.get_all_param_values(self.l_out)
-                logging.info('first mu %s first sigma %s' %(str(best_params[0][0, :]), str(best_params[1][0, :])))
+                logging.info('first mu (%f,%f) first covar (%f, %f, %f)' %(best_params[0][0, 0], best_params[0][0, 1], best_params[1][0, 0], best_params[1][0, 1], best_params[2][0]))
+                logging.info('second mu (%f,%f) second covar (%f, %f, %f)' %(best_params[0][1, 0], best_params[0][1, 1], best_params[1][1, 0], best_params[1][1, 1], best_params[2][1]))
                 n_validation_down = 0
             else:
                 n_validation_down += 1
@@ -319,9 +322,34 @@ def get_cluster_centers(input, n_cluster):
     kmns.fit(input)
     return kmns.cluster_centers_.astype('float32')
     
-    
+def get_named_entities(documents, mincount=10):
+    '''
+    given a list of texts find words that more than 
+    50% of time start with a capital letter and return them as NE
+    '''
+    word_count = defaultdict(int)
+    word_capital = defaultdict(int)
+    NEs = []
+    token_pattern = r'(?u)(?<![#@])\b\w+\b'
+    tp = re.compile(token_pattern)
+    for doc in documents:
+        words = tp.findall(doc)
+        for word in words:
+            if word[0].isupper():
+                word_capital[word.lower()] += 1
+            word_count[word.lower()] += 1
+
+    for word, count in word_count.iteritems():
+        if count < mincount: continue
+        capital = word_capital[word]
+        percent = float(capital) / count
+        if percent > 0.7:
+            NEs.append(word)
+    return NEs
+          
 def load_data(data_home, **kwargs):
     bucket_size = kwargs.get('bucket', 300)
+    dataset_name = kwargs.get('dataset_name')
     encoding = kwargs.get('encoding', 'utf-8')
     celebrity_threshold = kwargs.get('celebrity', 10)  
     mindf = kwargs.get('mindf', 10)
@@ -329,16 +357,25 @@ def load_data(data_home, **kwargs):
     one_hot_label = kwargs.get('onehot', False)
     grid_transform = kwargs.get('grid', False)
     normalize_words = kwargs.get('norm', False)
-    city_stops = kwargs.get('city_stops', True)
+    city_stops = kwargs.get('city_stops', False)
+
+
     if city_stops:
         logging.info('adding city names to stop words')
         city_names = list(get_us_city_name())
         stop_words.extend(city_names)
     dl = DataLoader(data_home=data_home, bucket_size=bucket_size, encoding=encoding, 
                     celebrity_threshold=celebrity_threshold, one_hot_labels=one_hot_label, 
-                    mindf=mindf, maxdf=0.1, norm='l1', idf=True, btf=False, tokenizer=None, subtf=True, stops=stop_words)
+                    mindf=mindf, maxdf=0.1, norm='l1', idf=True, btf=True, tokenizer=None, subtf=True, stops=stop_words)
     logging.info('loading dataset...')
     dl.load_data()
+
+    NEs = get_named_entities(dl.df_train.text.values, mincount=mindf)
+    ne_file = './data/ne_' + dataset_name + '.json'
+    with codecs.open(ne_file, 'w', encoding='utf-8') as fout:
+        json.dump({'nes': NEs}, fout)
+
+        
     U_test = dl.df_test.index.tolist()
     U_dev = dl.df_dev.index.tolist()
     U_train = dl.df_train.index.tolist()  
@@ -395,10 +432,11 @@ def train(data, **kwargs):
     grid_transform = kwargs.get('grid', False)
     rbf = kwargs.get('rbf', False)
     bigaus = kwargs.get('bigaus', False)
+    dataset_name = kwargs.get('dataset_name')
     loc_train, W_train, loc_dev, W_dev, loc_test, W_test, vocab = data
     input_size = loc_train.shape[1]
     output_size = W_train.shape[1]
-    batch_size = 500 if W_train.shape[0] < 10000 else 10000
+    batch_size = 100 if W_train.shape[0] < 10000 else 10000
     mus = None
     if rbf or bigaus:
         logging.info('initializing mus by clustering training points')
@@ -461,16 +499,23 @@ def train(data, **kwargs):
     with open(info_file, 'wb') as fout:
         pickle.dump((coords, preds, vocab), fout)
 
-    contour_me(info_file)       
+    contour_me(info_file, dataset_name=dataset_name)       
     
-def get_local_words(preds, vocab, k=50):
+def get_local_words(preds, vocab, NEs=[], k=50):
     #normalize the probabilites of each vocab
     normalized_preds = normalize(preds, norm='l1', axis=0)
     entropies = stats.entropy(normalized_preds)
-    sorted_indices = np.argsort(entropies)[0:k]
-    return np.array(vocab)[sorted_indices].tolist()
+    sorted_indices = np.argsort(entropies)
+    sorted_local_words = np.array(vocab)[sorted_indices].tolist()
+    filtered_local_words = []
+    NEset = set(NEs)
+    for word in sorted_local_words:
+        if word in NEset: continue
+        filtered_local_words.append(word)
+    return filtered_local_words[0:k]
    
-def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
+def contour_me(info_file='coords-preds-vocab429200_1003.pkl', **kwargs):
+    dataset_name = kwargs.get('dataset_name')
     lllat = 24.396308
     lllon = -124.848974
     urlat =  49.384358
@@ -497,17 +542,29 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
         shutil.rmtree(map_dir)
     os.mkdir(map_dir)
     
-    
+    topk_words = []    
+    dialect_words = ['jawn', 'paczki', 'euchre', 'brat', 'toboggan', 'brook', 'grinder', 'yall', 'yinz', 'youze', 'hella', 'yeen']
+    topk_words.extend(dialect_words)
+    custom_words = ['springfield', 'columbia', 'nigga', 'niqqa', 'bamma', 'cooter', 'britches', 'yapper', 'younguns', 'hotdish', 
+                    'schnookered', 'bubbler', 'betcha', 'dontcha']
+    topk_words.extend(custom_words)
             
     logging.info('reading info...')
     with open(info_file, 'rb') as fin:
         coords, preds, vocab = pickle.load(fin)
     vocabset = set(vocab)
-    local_words = get_local_words(preds, vocab, k=500)
-    logging.info(local_words)
-    topk_words = local_words[0:100]
     
-    add_cities = True
+    add_local_words = True
+    if add_local_words:
+        ne_file = './data/ne_' + dataset_name + '.json'
+        with codecs.open(ne_file, 'r', encoding='utf-8') as fout:
+            NEs = json.load(fout)
+        NEs = NEs['nes']
+        local_words = get_local_words(preds, vocab, NEs=NEs, k=500)
+        logging.info(local_words)
+        topk_words.extend(local_words[0:20])
+    
+    add_cities = False
     if add_cities:
         with open('./data/cities.json', 'r') as fin:
             cities = json.load(fin)
@@ -515,8 +572,6 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
         for city in cities:
             name = city['city'].lower()
             topk_words.append(name)
-    #dialect_words = ['jawn', 'paczki', 'euchre', 'brat', 'toboggan', 'brook', 'grinder', 'yall', 'yinz', 'youze', 'hella']
-    #topk_words.extend(dialect_words)
     wi = 0
     for word in topk_words:
         if word in vocabset:
@@ -535,9 +590,9 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
             projection='lcc',lat_1=33,lat_2=45,lon_0=-95, resolution='i')
             '''
             m.drawmapboundary(fill_color = 'white')
-            #m.drawcoastlines(linewidth=0.5)
+            #m.drawcoastlines(linewidth=0.2)
             m.drawcountries(linewidth=0.2)
-            #m.drawstates(linewidth=0.2)
+            m.drawstates(linewidth=0.2, color='lightgray')
             #m.fillcontinents(color='white', lake_color='#0000ff', zorder=2)
             #m.drawrivers(color='#0000ff')
             m.drawlsmask(land_color='gray',ocean_color="#b0c4de", lakes=True)
@@ -549,6 +604,7 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
             ax.yaxis.set_visible(False) 
             for spine in ax.spines.itervalues(): 
                 spine.set_visible(False) 
+
             state_names_set = set(short_state_names.values())
             mi_index = 0
             wi_index = 0
@@ -572,12 +628,22 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
                 hull = ConvexHull(state)
                 hull_points = np.array(state)[hull.vertices]
                 x, y = hull_points.mean(axis=0)
-                poly = MplPolygon(state,facecolor='lightgray',edgecolor='black')
+                if short_name == 'MD':
+                    y = y - 0.5
+                    x = x + 0.5
+                elif short_name == 'DC':
+                    y = y + 0.1
+                elif short_name == 'MI':
+                    x = x - 1
+                elif short_name == 'RI':
+                    x = x + 1
+                    y = y - 1
+                #poly = MplPolygon(state,facecolor='lightgray',edgecolor='black')
                 #x, y = np.median(np.array(state), axis=0)
                 # You have to align x,y manually to avoid overlapping for little states
                 if draw_state_name:
                     plt.text(x+.1, y, short_name, ha="center", fontsize=5)
-                ax.add_patch(poly)
+                #ax.add_patch(poly)
                 #pdb.set_trace()
                 printed_names += [short_name,] 
             mlon, mlat = m(*(coords[:,1], coords[:,0]))
@@ -601,15 +667,15 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
     
                 #Remove the lakes and oceans
                 data = maskoceans(xi, yi, zi)
-                #conf = m.contourf(xi, yi, data, cmap=plt.get_cmap('coolwarm'))
-                con = m.contour(xi, yi, data, 3, cmap=plt.get_cmap('YlOrRd'), linewidths=1)
+                con = m.contourf(xi, yi, data, cmap=plt.get_cmap('YlOrRd'))
+                #con = m.contour(xi, yi, data, 3, cmap=plt.get_cmap('YlOrRd'), linewidths=1)
                 #con = m.contour(x, y, z, 3, cmap=plt.get_cmap('YlOrRd'), tri=True, linewidths=1)
                 #conf = m.contourf(x, y, z, 3, cmap=plt.get_cmap('coolwarm'), tri=True)
                 cbar = m.colorbar(con,location='right',pad="3%")
                 #plt.setp(cbar.ax.get_yticklabels(), visible=False)
                 #cbar.ax.tick_params(axis=u'both', which=u'both',length=0)
                 #cbar.ax.set_yticklabels(['low', 'high'])
-                tick_locator = ticker.MaxNLocator(nbins=3)
+                tick_locator = ticker.MaxNLocator(nbins=9)
                 cbar.locator = tick_locator
                 cbar.update_ticks()
                 cbar.ax.tick_params(labelsize=6) 
@@ -619,7 +685,11 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
 
             else:
                 m.scatter(mlon, mlat)
-            
+            world_shp_info = m.readshapefile('./data/CNTR_2014_10M_SH/Data/CNTR_RG_10M_2014','world',drawbounds=False, zorder=100)
+            for shapedict,state in zip(m.world_info, m.world):
+                if shapedict['CNTR_ID'] not in ['CA', 'MX']: continue
+                poly = MplPolygon(state,facecolor='gray',edgecolor='gray')
+                ax.add_patch(poly)
             plt.title('term: ' + word )
             plt.savefig(map_dir + word + '_' + grid_interpolation_method +  '.pdf')
             plt.close()
@@ -759,9 +829,12 @@ def parse_args(argv):
 if __name__ == '__main__':
     #nice -n 10 python loc2lang.py -d ~/datasets/na/processed_data/ -enc utf-8 -reg 0 -drop 0.0 -mindf 200 -hid 1000 -bigaus -autoencoder -map
     args = parse_args(sys.argv[1:])
+    datadir = args.dir
+    dataset_name = datadir.split('/')[-3]
+    logging.info('dataset: %s' % dataset_name)
     if args.map:
-        contour_me(grid=args.grid)
+        contour_me(grid=args.grid, dataset_name=dataset_name)
     else:
-        data = load_data(data_home=args.dir, encoding=args.encoding, mindf=args.mindf, grid=args.grid)
+        data = load_data(data_home=args.dir, encoding=args.encoding, mindf=args.mindf, grid=args.grid, dataset_name=dataset_name)
         train(data, regul_coef=args.regularization, dropout_coef=args.dropout, 
-              hidden_size=args.hidden, autoencoder=args.autoencoder, grid=args.grid, rbf=args.rbf, bigaus=args.bigaus)
+              hidden_size=args.hidden, autoencoder=args.autoencoder, grid=args.grid, rbf=args.rbf, bigaus=args.bigaus, dataset_name=dataset_name)

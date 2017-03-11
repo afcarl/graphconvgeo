@@ -152,12 +152,6 @@ class DiagonalBivariateGaussianLayer(Layer):
         probs = (0.5 / np.pi) * sigmainvprods * expterm
         return probs
         
-        
-        
-        
-        difnorm = T.sum((C-X)**2, axis=-1)
-        a = T.exp(-difnorm * (self.sigmas**2))
-        return a
 
 class BivariateGaussianLayer(Layer):
 

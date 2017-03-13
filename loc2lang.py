@@ -8,7 +8,9 @@ in the output and visualise that).
 '''
 import matplotlib as mpl
 import re
+from itertools import product
 mpl.use('Agg')
+import matplotlib.mlab as mlab
 from matplotlib import ticker
 import matplotlib.pyplot as plt
 from matplotlib.mlab import griddata
@@ -255,6 +257,7 @@ class NNModel():
         for step in range(self.n_epochs):
             for batch in self.iterate_minibatches(X_train, Y_train, self.batch_size, shuffle=True):
                 x_batch, y_batch = batch
+                if sp.sparse.issparse(y_batch): y_batch = y_batch.todense().astype('float32')
                 l_train = self.f_train(x_batch, y_batch)
             l_val = self.f_cross_entropy_loss(X_dev, Y_dev)
             if l_val < best_val_loss and (best_val_loss - l_val) > (0.0001 * l_val):
@@ -370,10 +373,16 @@ def load_data(data_home, **kwargs):
     logging.info('loading dataset...')
     dl.load_data()
 
-    NEs = get_named_entities(dl.df_train.text.values, mincount=mindf)
+    
     ne_file = './data/ne_' + dataset_name + '.json'
-    with codecs.open(ne_file, 'w', encoding='utf-8') as fout:
-        json.dump({'nes': NEs}, fout)
+    if path.exists(ne_file):
+        with codecs.open(ne_file, 'r', encoding='utf-8') as fout:
+            NEs = json.load(fout)
+        NEs = NEs['nes']
+    else:
+        NEs = get_named_entities(dl.df_train.text.values, mincount=mindf)
+        with codecs.open(ne_file, 'w', encoding='utf-8') as fout:
+            json.dump({'nes': NEs}, fout)
 
         
     U_test = dl.df_test.index.tolist()
@@ -387,7 +396,7 @@ def load_data(data_home, **kwargs):
     dl.tfidf()
     #words that should be used in the output and be predicted
 
-    W_train = dl.X_train.todense().astype('float32')
+    W_train = dl.X_train.astype('float32')
     W_dev = dl.X_dev.todense().astype('float32')
     W_test = dl.X_test.todense().astype('float32')
 
@@ -445,7 +454,7 @@ def train(data, **kwargs):
     model = NNModel(n_epochs=1000, batch_size=batch_size, regul_coef=regul, 
                     input_size=input_size, output_size=output_size, hidden_layer_sizes=[hid_size, hid_size], 
                     drop_out=True, dropout_coef=dropout_coef, early_stopping_max_down=10, 
-                    autoencoder=autoencoder, input_sparse=sp.sparse.issparse(loc_train), reload=False, rbf=rbf, bigaus=bigaus, mus=mus)
+                    autoencoder=autoencoder, input_sparse=sp.sparse.issparse(loc_train), reload=True, rbf=rbf, bigaus=bigaus, mus=mus)
     #pdb.set_trace()
     model.fit(loc_train, W_train, loc_dev, W_dev, loc_test, W_test)
     
@@ -477,23 +486,33 @@ def train(data, **kwargs):
     lllon = -124.848974
     urlat =  49.384358
     urlon = -66.885444
-    lats = np.arange(lllat, urlat, 0.5)
-    lons = np.arange(lllon, urlon, 0.5)
+    step = 0.5
+    if dataset_name == 'world-final':
+        lllat = -90
+        lllon = -180
+        urlat = 90
+        urlon = 180
+        step = 0.5
+    lats = np.arange(lllat, urlat, step)
+    lons = np.arange(lllon, urlon, step)
     
-    check_in_us = True
-    coords = []
-    for lat in lats:
-        for lon in lons:
-            if in_us(lat, lon) or not check_in_us:
-                coords.append([lat, lon])
-    logging.info('%d coords within continental US' %len(coords))
-    coords = np.array(coords).astype('float32')
-    #grid representation
-    if grid_transform:
-        grid_coords = grid_representation(input=coords)
+    check_in_us = True if dataset_name != 'world-final' else False
+    
+    if check_in_us:
+        coords = []
+        for lat in lats:
+            for lon in lons:
+                if in_us(lat, lon):
+                    coords.append([lat, lon])
+                
+        logging.info('%d coords within continental US' %len(coords))
+        coords = np.array(coords).astype('float32')
     else:
-        grid_coords = coords
-    preds = model.predict(grid_coords)
+        coords = np.array(map(list, product(lats, lons))).astype('float32')
+
+    #grid representation
+
+    preds = model.predict(coords)
     info_file = 'coords-preds-vocab' + str(W_train.shape[0])+ '_' + str(hid_size) + '.pkl'
     logging.info('dumping the results in %s' %info_file)
     with open(info_file, 'wb') as fout:
@@ -514,12 +533,18 @@ def get_local_words(preds, vocab, NEs=[], k=50):
         filtered_local_words.append(word)
     return filtered_local_words[0:k]
    
-def contour_me(info_file='coords-preds-vocab429200_1003.pkl', **kwargs):
+def contour_me(info_file='coords-preds-vocab1366766_1000.pkl', **kwargs):
     dataset_name = kwargs.get('dataset_name')
     lllat = 24.396308
     lllon = -124.848974
     urlat =  49.384358
     urlon = -66.885444
+    if dataset_name == 'world-final':
+        lllat = -90
+        lllon = -180
+        urlat = 90
+        urlon = 180
+        
     fig = plt.figure(figsize=(10, 8))
     grid_transform = kwargs.get('grid', False)
     ax = fig.add_subplot(111, axisbg='w', frame_on=False)
@@ -542,7 +567,9 @@ def contour_me(info_file='coords-preds-vocab429200_1003.pkl', **kwargs):
         shutil.rmtree(map_dir)
     os.mkdir(map_dir)
     
+    
     topk_words = []    
+    
     dialect_words = ['jawn', 'paczki', 'euchre', 'brat', 'toboggan', 'brook', 'grinder', 'yall', 'yinz', 'youze', 'hella', 'yeen']
     topk_words.extend(dialect_words)
     custom_words = ['springfield', 'columbia', 'nigga', 'niqqa', 'bamma', 'cooter', 'britches', 'yapper', 'younguns', 'hotdish', 
@@ -562,7 +589,7 @@ def contour_me(info_file='coords-preds-vocab429200_1003.pkl', **kwargs):
         NEs = NEs['nes']
         local_words = get_local_words(preds, vocab, NEs=NEs, k=500)
         logging.info(local_words)
-        topk_words.extend(local_words[0:20])
+        topk_words.extend(local_words[0:100])
     
     add_cities = False
     if add_cities:
@@ -592,10 +619,11 @@ def contour_me(info_file='coords-preds-vocab429200_1003.pkl', **kwargs):
             m.drawmapboundary(fill_color = 'white')
             #m.drawcoastlines(linewidth=0.2)
             m.drawcountries(linewidth=0.2)
-            m.drawstates(linewidth=0.2, color='lightgray')
+            if dataset_name != 'world-fianl':
+                m.drawstates(linewidth=0.2, color='lightgray')
             #m.fillcontinents(color='white', lake_color='#0000ff', zorder=2)
             #m.drawrivers(color='#0000ff')
-            m.drawlsmask(land_color='gray',ocean_color="#b0c4de", lakes=True)
+            #m.drawlsmask(land_color='gray',ocean_color="#b0c4de", lakes=True)
             #m.drawcounties()
             shp_info = m.readshapefile('./data/us_states_st99/st99_d00','states',drawbounds=True, zorder=0)
             printed_names = []
@@ -609,7 +637,7 @@ def contour_me(info_file='coords-preds-vocab429200_1003.pkl', **kwargs):
             mi_index = 0
             wi_index = 0
             for shapedict,state in zip(m.states_info, m.states):
-                draw_state_name = True
+                draw_state_name = True if dataset_name != 'world-fianl' else False
                 if shapedict['NAME'] not in state_names_set: continue
                 short_name = short_state_names.keys()[short_state_names.values().index(shapedict['NAME'])]
                 if short_name in printed_names and short_name not in ['MI', 'WI']: 
@@ -652,103 +680,97 @@ def contour_me(info_file='coords-preds-vocab429200_1003.pkl', **kwargs):
             xi = np.linspace(mlon.min(), mlon.max(), numcols)
             yi = np.linspace(mlat.min(), mlat.max(), numrows)
 
-            do_contour = True
-            if do_contour:
-                xi, yi = np.meshgrid(xi, yi)
-                # interpolate
-                x, y, z = mlon, mlat, scores
-                #pdb.set_trace()
-                #zi = griddata(x, y, z, xi, yi)
-                zi = gd(
-                    (mlon, mlat),
-                    scores,
-                    (xi, yi),
-                    method=grid_interpolation_method, rescale=False)
-    
-                #Remove the lakes and oceans
-                data = maskoceans(xi, yi, zi)
-                con = m.contourf(xi, yi, data, cmap=plt.get_cmap('YlOrRd'))
-                #con = m.contour(xi, yi, data, 3, cmap=plt.get_cmap('YlOrRd'), linewidths=1)
-                #con = m.contour(x, y, z, 3, cmap=plt.get_cmap('YlOrRd'), tri=True, linewidths=1)
-                #conf = m.contourf(x, y, z, 3, cmap=plt.get_cmap('coolwarm'), tri=True)
-                cbar = m.colorbar(con,location='right',pad="3%")
-                #plt.setp(cbar.ax.get_yticklabels(), visible=False)
-                #cbar.ax.tick_params(axis=u'both', which=u'both',length=0)
-                #cbar.ax.set_yticklabels(['low', 'high'])
-                tick_locator = ticker.MaxNLocator(nbins=9)
-                cbar.locator = tick_locator
-                cbar.update_ticks()
-                cbar.ax.tick_params(labelsize=6) 
-                cbar.set_label('logprob')
-                for line in cbar.lines: 
-                    line.set_linewidth(20)
+            xi, yi = np.meshgrid(xi, yi)
+            # interpolate
+            x, y, z = mlon, mlat, scores
+            #pdb.set_trace()
+            #zi = griddata(x, y, z, xi, yi)
+            zi = gd(
+                (mlon, mlat),
+                scores,
+                (xi, yi),
+                method=grid_interpolation_method, rescale=False)
 
-            else:
-                m.scatter(mlon, mlat)
-            world_shp_info = m.readshapefile('./data/CNTR_2014_10M_SH/Data/CNTR_RG_10M_2014','world',drawbounds=False, zorder=100)
-            for shapedict,state in zip(m.world_info, m.world):
-                if shapedict['CNTR_ID'] not in ['CA', 'MX']: continue
-                poly = MplPolygon(state,facecolor='gray',edgecolor='gray')
-                ax.add_patch(poly)
+            #Remove the lakes and oceans
+            data = maskoceans(xi, yi, zi)
+            con = m.contourf(xi, yi, data, cmap=plt.get_cmap('YlOrRd'))
+            #con = m.contour(xi, yi, data, 3, cmap=plt.get_cmap('YlOrRd'), linewidths=1)
+            #con = m.contour(x, y, z, 3, cmap=plt.get_cmap('YlOrRd'), tri=True, linewidths=1)
+            #conf = m.contourf(x, y, z, 3, cmap=plt.get_cmap('coolwarm'), tri=True)
+            cbar = m.colorbar(con,location='right',pad="3%")
+            #plt.setp(cbar.ax.get_yticklabels(), visible=False)
+            #cbar.ax.tick_params(axis=u'both', which=u'both',length=0)
+            #cbar.ax.set_yticklabels(['low', 'high'])
+            tick_locator = ticker.MaxNLocator(nbins=9)
+            cbar.locator = tick_locator
+            cbar.update_ticks()
+            cbar.ax.tick_params(labelsize=6) 
+            cbar.set_label('logprob')
+            for line in cbar.lines: 
+                line.set_linewidth(20)
+
+            if dataset_name != 'world-final':
+                world_shp_info = m.readshapefile('./data/CNTR_2014_10M_SH/Data/CNTR_RG_10M_2014','world',drawbounds=False, zorder=100)
+                for shapedict,state in zip(m.world_info, m.world):
+                    if shapedict['CNTR_ID'] not in ['CA', 'MX']: continue
+                    poly = MplPolygon(state,facecolor='gray',edgecolor='gray')
+                    ax.add_patch(poly)
             plt.title('term: ' + word )
             plt.savefig(map_dir + word + '_' + grid_interpolation_method +  '.pdf')
             plt.close()
             del m
 
-    '''        
-    for region, words in region_words.iteritems():
-        for word in words:
-            if word in vocabset:
-                logging.info('mapping %s' % word)
-                index = vocab.index(word)
-                scores = preds[:, index]
-                m = Basemap(llcrnrlat=lllat,
-                urcrnrlat=urlat,
-                llcrnrlon=lllon,
-                urcrnrlon=urlon,
-                resolution='i', projection='cyl')
-                m.drawmapboundary(fill_color = 'white')
-                m.drawcoastlines()
-                m.drawcountries()
-                m.drawstates()
-                
-                
+  
+def visualise_bigaus(params_file, **kwargs):
+    with open(params_file, 'rb') as fin:
+        params = pickle.load(fin)
+
+    mus, sigmas, sigma12s = params[0], params[1], params[2] 
+    dataset_name = kwargs.get('dataset_name')
+    lllat = 24.396308
+    lllon = -124.848974
+    urlat =  49.384358
+    urlon = -66.885444
+    if dataset_name == 'world-final':
+        lllat = -90
+        lllon = -180
+        urlat = 90
+        urlon = 180
+    m = Basemap(llcrnrlat=lllat,
+    urcrnrlat=urlat,
+    llcrnrlon=lllon,
+    urcrnrlon=urlon,
+    resolution='i', projection='cyl')
     
-                mlon, mlat = m(*(coords[:,1], coords[:,0]))
-                # grid data
-                numcols, numrows = 1000, 1000
-                xi = np.linspace(mlon.min(), mlon.max(), numcols)
-                yi = np.linspace(mlat.min(), mlat.max(), numrows)
-                #exclude xi and yi which are not in continental us
-                xi_inus = []
-                yi_inus = []
-                for i in range(numcols):
-                    this_lat, this_lon = yi[i], xi[i]
-                    if in_us(this_lat, this_lon):
-                        xi_inus.append(this_lon)
-                        yi_inus.append(this_lat)
-                xi = np.array(xi_inus)
-                yi = np.array(yi_inus)
-                        
-                xi, yi = np.meshgrid(xi, yi)
-                # interpolate
-                x, y, z = mlon, mlat, scores
-                #pdb.set_trace()
-                #zi = griddata(x, y, z, xi, yi)
-                zi = gd(
-                    (mlon, mlat),
-                    scores,
-                    (xi, yi),
-                    method=grid_interpolation_method)
-                con = m.contourf(xi, yi, zi, cmap=cm.s3pcpn)
-                cbar = m.colorbar(con,location='right',pad="3%", format='%.0e')
-                plt.setp(cbar.ax.get_yticklabels(), visible=False)
-                #cbar.ax.set_yticklabels(['low', 'high'])
-                #cbar.ax.tick_params(labelsize=6) 
-                cbar.set_label('prob')
-                plt.title('term: ' + word + ' dialect region: ' + region)
-                plt.savefig('./maps/' + region + '_' + word + '_' + grid_interpolation_method +  '.pdf')
-    ''' 
+    m.drawmapboundary(fill_color = 'white')
+    #m.drawcoastlines(linewidth=0.2)
+    m.drawcountries(linewidth=0.2)
+    m.drawstates(linewidth=0.2, color='lightgray')
+    #m.fillcontinents(color='white', lake_color='#0000ff', zorder=2)
+    #m.drawrivers(color='#0000ff')
+    m.drawlsmask(land_color='gray',ocean_color="#b0c4de", lakes=True)
+    lllon, lllat = m(lllon, lllat)
+    urlon, urlat = m(urlon, urlat)
+    numcols, numrows = 1000, 1000
+    X = np.linspace(lllon, urlon, numcols)
+    Y = np.linspace(lllat, urlat, numrows)
+    #X, Y = np.meshgrid(X, Y)
+    
+
+    for k in xrange(mus.shape[0]):
+        sigmax=sigmas[k][1]
+        sigmay=sigmas[k][0]
+        mux=mus[k][1]
+        muy=mus[k][0]
+        sigmaxy = sigma12s[k]
+        corxy = 1.0 / (1 + np.abs(sigmaxy))
+        sigmaxy = 0
+        Z = mlab.bivariate_normal(X, Y, sigmax=sigmax, sigmay=sigmay, mux=mux, muy=muy, sigmaxy=sigmaxy)
+        #Z = maskoceans(X, Y, Z)
+        pdb.set_trace()
+        con = m.contour(X, Y, Z, tri=True)
+    plt.savefig('gaus.pdf')
+        
 def parse_args(argv):
     """
     Parse commandline arguments.
@@ -824,6 +846,9 @@ def parse_args(argv):
         help='if exists transforms the input from lat/lon to bivariate gaussian probabilities and learns centers and sigmas as well.') 
     parser.add_argument(
         '-m', '--message', type=str) 
+    parser.add_argument(
+        '-vbi', '--vbi', type=str,
+        help='if exists load params from vbi file and visualize bivariate gaussians on a map', default=None) 
     args = parser.parse_args(argv)
     return args
 if __name__ == '__main__':
@@ -832,7 +857,9 @@ if __name__ == '__main__':
     datadir = args.dir
     dataset_name = datadir.split('/')[-3]
     logging.info('dataset: %s' % dataset_name)
-    if args.map:
+    if args.vbi:
+        visualise_bigaus(args.vbi, dataset_name=dataset_name)
+    elif args.map:
         contour_me(grid=args.grid, dataset_name=dataset_name)
     else:
         data = load_data(data_home=args.dir, encoding=args.encoding, mindf=args.mindf, grid=args.grid, dataset_name=dataset_name)

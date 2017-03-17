@@ -637,7 +637,8 @@ def contour_me(info_file='coords-preds-vocab1366766_1000.pkl', **kwargs):
             mi_index = 0
             wi_index = 0
             for shapedict,state in zip(m.states_info, m.states):
-                draw_state_name = True if dataset_name != 'world-fianl' else False
+                if dataset_name == 'world-final': break
+                draw_state_name = True
                 if shapedict['NAME'] not in state_names_set: continue
                 short_name = short_state_names.keys()[short_state_names.values().index(shapedict['NAME'])]
                 if short_name in printed_names and short_name not in ['MI', 'WI']: 

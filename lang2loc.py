@@ -77,6 +77,19 @@ def geo_eval(y_true, y_pred, U_eval, classLatMedian, classLonMedian, userLocatio
         
     return np.mean(distances), np.median(distances), acc_at_161
 
+def geo_latlon_eval(U_eval, userLocation, latlon_pred):
+    distances = []
+    for i in range(0, len(U_eval)):
+        user = U_eval[i]
+        location = userLocation[user].split(',')
+        lat, lon = float(location[0]), float(location[1])
+        lat_pred, lon_pred = latlon_pred[i]
+        distance = haversine((lat, lon), (lat_pred, lon_pred))
+        distances.append(distance)
+    acc_at_161 = 100 * len([d for d in distances if d < 161]) / float(len(distances))
+    logging.info( "Mean: " + str(int(np.mean(distances))) + " Median: " + str(int(np.median(distances))) + " Acc@161: " + str(int(acc_at_161)))
+    return np.mean(distances), np.median(distances), acc_at_161
+
 class NNModel():
     def __init__(self, 
                  n_epochs=10, 
@@ -114,11 +127,102 @@ class NNModel():
         logging.info('building nn model with hidden size %s and output size %d input_sparse %s' % (str(self.hidden_layer_sizes), self.output_size, str(self.sparse)))
         self.build()
         
+    def unpack_params(self, output, n_comp):
+        output = output.reshape(shape=(-1, n_comp, 6))
+        mus = output[:, :, 0:2]
+        #mus = np.array([90, 180]) * T.tanh(mus)
+        sigmas = output[:, :, 2:4]
+        corxy = output[:, :, 4]
+        pis = output[:, :, 5]
+        #sigmas should be positive (0, +inf)
+        sigmas = T.nnet.softplus(sigmas)
+        #pis should sum to 1 for each input
+        pis = T.nnet.softmax(pis)
+        #cor(x, y) should be between (-1, 1)
+        corxy = T.nnet.nnet.softsign(corxy)
+        return mus, sigmas, corxy, pis
+    
+    def nll_loss(self, mus, sigmas, corxy, pis, y_true):
+        Y = y_true[:, np.newaxis, :]
+        diff = Y - mus
+        diffprod = T.prod(diff, axis=-1)
+        sigmainvs = T.inv(sigmas)
+        sigmainvprods = sigmainvs[:,:, 0] * sigmainvs[:,:, 1]
+        sigmas2 = sigmas ** 2
+        corxy2 = corxy **2
+        diff2 = diff ** 2
+        diffsigma = diff2 * T.inv(sigmas2)
+        diffsigmanorm = T.sum(diffsigma, axis=-1)
+        z = diffsigmanorm - 2 * corxy * diffprod * sigmainvprods
+        oneminuscorxy2inv = T.inv(1.0 - corxy2)
+        '''
+        expterm = T.exp(-0.5 * z * oneminuscorxy2inv)
+        probs = (0.5 / np.pi) * sigmainvprods * T.sqrt(oneminuscorxy2inv) * expterm
+        loss = - T.log(T.sum(pis * probs, axis=1))
+        loss = T.mean(loss)
+        '''
+        #logsumexp trick
+        exponent = -0.5 * z * oneminuscorxy2inv
+        normalizer = (0.5 / np.pi) * sigmainvprods * T.sqrt(oneminuscorxy2inv)
+        #when something is a * exp(x) = exp(x + loga)
+        new_exponent = exponent + T.log(0.5 / np.pi) + T.log(sigmainvprods) + T.log(T.sqrt(oneminuscorxy2inv)) + T.log(pis)
+        max_exponent = T.max(new_exponent ,axis=1, keepdims=True)
+        mod_exponent = new_exponent - max_exponent
+        gauss_mix = T.sum(T.exp(mod_exponent),axis=1)
+        log_gauss = max_exponent + T.log(gauss_mix)
+        loss = -T.mean(log_gauss)
         
+        return loss
+
+    def pred(self, mus, sigmas, corxy, pis):
+        #logging.info(mus[0, 0])
+        X = mus
+        #diff is all zero we don't need to compute that
+        
+        #diff = X - mus
+        #diffprod = np.prod(diff, axis=-1)
+        sigmainvs = 1.0 / sigmas
+        sigmainvprods = sigmainvs[:,:, 0] * sigmainvs[:,:, 1]
+        sigmas2 = sigmas ** 2
+        corxy2 = corxy **2
+        #diff2 = diff ** 2
+        #diffsigma = diff2 / sigmas2
+        #diffsigmanorm = np.sum(diffsigma, axis=-1)
+        #z = diffsigmanorm - 2 * corxy * diffprod * sigmainvprods
+        oneminuscorxy2inv = 1.0 / (1.0 - corxy2)
+        #expterm = np.exp(-0.5 * z * oneminuscorxy2inv)
+        expterm = 1.0
+        probs = (0.5 / np.pi) * sigmainvprods * np.sqrt(oneminuscorxy2inv) * expterm
+        probs = pis * probs
+        preds = np.argmax(probs, axis=1)
+        selected_mus = mus[np.arange(mus.shape[0]),preds,:]
+        selected_sigmas = sigmas[np.arange(sigmas.shape[0]),preds,:]
+        selected_corxy = corxy[np.arange(corxy.shape[0]),preds]
+        selected_pis = pis[np.arange(pis.shape[0]),preds]        
+        return selected_mus
+    
+    def get_symb_mus(self, mus, sigmas, corxy, pis):
+        sigmainvs = 1.0 / sigmas
+        sigmainvprods = sigmainvs[:,:, 0] * sigmainvs[:,:, 1]
+        sigmas2 = sigmas ** 2
+        corxy2 = corxy **2
+        #diff2 = diff ** 2
+        #diffsigma = diff2 / sigmas2
+        #diffsigmanorm = np.sum(diffsigma, axis=-1)
+        #z = diffsigmanorm - 2 * corxy * diffprod * sigmainvprods
+        oneminuscorxy2inv = 1.0 / (1.0 - corxy2)
+        #expterm = np.exp(-0.5 * z * oneminuscorxy2inv)
+        expterm = 1.0
+        probs = (0.5 / np.pi) * sigmainvprods * T.sqrt(oneminuscorxy2inv) * expterm
+        probs = pis * probs
+        preds = T.argmax(probs, axis=1)
+        selected_mus = mus[T.arange(mus.shape[0]),preds,:]
+        return selected_mus
+    
     def build(self):
 
         self.X_sym = S.csr_matrix(name='inputs', dtype=self.dtype)
-        self.Y_sym = T.ivector()
+        self.Y_sym = T.matrix(name='y_true', dtype=self.dtype)
         if self.autoencoder:
             logging.info('autoencoder is on!')
         else:
@@ -127,61 +231,53 @@ class NNModel():
                                          input_var=self.X_sym)
 
         if self.drop_out and self.dropout_coef > 0:
-            l_in = lasagne_layers.SparseInputDenseLayer(l_in, p=self.dropout_coef)
+            l_in = lasagne_layers.SparseInputDropoutLayer(l_in, p=self.dropout_coef)
 
         l_hid1 = SparseInputDenseLayer(l_in, num_units=self.hidden_layer_sizes[0], 
                                       nonlinearity=lasagne.nonlinearities.rectify,
                                       W=lasagne.init.GlorotUniform())
-        if self.drop_out and self.dropout_coef > 0:
-            l_hid1 = lasagne.layers.dropout(l_hid1, p=self.dropout_coef)
+        if not self.bigaus:
+            if self.drop_out and self.dropout_coef > 0:
+                l_hid1 = lasagne.layers.dropout(l_hid1, p=self.dropout_coef)
 
         if self.bigaus:
-            logging.info('adding bivariate gaussian layer...')
-            l_hid2 = BivariateGaussianLayer(l_hid1, num_units=self.hidden_layer_sizes[1], mus=self.mus)
+            self.l_out = lasagne.layers.DenseLayer(l_hid1, num_units=self.hidden_layer_sizes[1] * 6,
+                                              nonlinearity=lasagne.nonlinearities.linear,
+                                              W=lasagne.init.GlorotUniform())
+            
+            
+            
+            sq_error_coef = 0.01
+            output = lasagne.layers.get_output(self.l_out, self.X_sym)
+            mus, sigmas, corxy, pis = self.unpack_params(output, n_comp=self.hidden_layer_sizes[1])
+            loss = self.nll_loss(mus, sigmas, corxy, pis, self.Y_sym)
+            predicted_mu = self.get_symb_mus(mus, sigmas, corxy, pis)
+            #loss += lasagne.objectives.squared_error(predicted_mu, self.Y_sym).mean() * sq_error_coef
+            
+            self.eval_output = lasagne.layers.get_output(self.l_out, self.X_sym, deterministic=True)
+            mus_eval, sigmas_eval, corxy_eval, pis_eval = self.unpack_params(output, n_comp=self.hidden_layer_sizes[1])
+            eval_loss = self.nll_loss(mus_eval, sigmas_eval, corxy_eval, pis_eval, self.Y_sym)        
+            eval_predicted_mu = self.get_symb_mus(mus_eval, sigmas_eval, corxy_eval, pis_eval)
+            #eval_loss += lasagne.objectives.squared_error(eval_predicted_mu, self.Y_sym).mean() * sq_error_coef
         else:
-            l_hid2 = lasagne.layers.DenseLayer(l_hid1, num_units=self.hidden_layer_sizes[1], 
-                                               nonlinearity=lasagne.nonlinearities.rectify,
-                                           W=lasagne.init.GlorotUniform())
-
-        l_hid3 = lasagne.layers.DenseLayer(l_hid2, num_units=self.hidden_layer_sizes[2], 
-                                           nonlinearity=lasagne.nonlinearities.linear,
-                                           W=lasagne.init.GlorotUniform())
- 
-        self.l_out = lasagne.layers.DenseLayer(l_hid3, num_units=self.output_size,
-                                          nonlinearity=lasagne.nonlinearities.softmax,
-                                          W=lasagne.init.GlorotUniform())
-        
-        
-        self.eval_output = lasagne.layers.get_output(self.l_out, self.X_sym, deterministic=True)
-        self.eval_pred = self.eval_output.argmax(-1)
-
-        #self.mu_output = lasagne.layers.get_output(l_hid, self.X_sym)
-        #self.f_mu = theano.function([self.X_sym, self.Y_sym], self.mu_output, on_unused_input='warn')
-        #self.embedding = lasagne.lasagne_layers.get_output(l_hid1, self.X_sym, H=H,  deterministic=True)        
-        #self.f_get_embeddings = theano.function([self.X_sym], self.embedding)
-        self.output = lasagne.layers.get_output(self.l_out, self.X_sym)
-        #self.debug_output = lasagne.layers.get_output(l_hid, self.X_sym)
-        #self.pred = self.output.argmax(-1)
-        loss = lasagne.objectives.categorical_crossentropy(self.output, self.Y_sym)
-        loss = loss.mean()
-        eval_loss = lasagne.objectives.categorical_crossentropy(self.eval_output, self.Y_sym)
-        eval_loss = eval_loss.mean()
-        eval_cross_entropy_loss = lasagne.objectives.categorical_crossentropy(self.eval_output, self.Y_sym)
-        eval_cross_entropy_loss = eval_cross_entropy_loss.mean()
-        
-        
-        
+            self.l_out = lasagne.layers.DenseLayer(l_hid1, num_units=2, nonlinearity=lasagne.nonlinearities.linear,
+                                                   W=lasagne.init.GlorotUniform())
+            output = lasagne.layers.get_output(self.l_out, self.X_sym)
+            loss = lasagne.objectives.squared_error(output, self.Y_sym).mean()
+            self.eval_output = lasagne.layers.get_output(self.l_out, self.X_sym, deterministic=True)
+            eval_loss = lasagne.objectives.squared_error(output, self.Y_sym).mean()
+            
+  
         if self.regul_coef:
-            l1_share_out = 0.0
+            l1_share_out = 0.5
             l1_share_hid = 0.5
             regul_coef_out, regul_coef_hid = self.regul_coef, self.regul_coef
             logging.info('regul coefficient for output and hidden lasagne_layers is ' + str(self.regul_coef))
             l1_penalty = lasagne.regularization.regularize_layer_params(self.l_out, l1) * regul_coef_out * l1_share_out
             l2_penalty = lasagne.regularization.regularize_layer_params(self.l_out, l2) * regul_coef_out * (1-l1_share_out)
-            l1_penalty += lasagne.regularization.regularize_layer_params(l_hid1, l1) * regul_coef_hid * l1_share_hid
-            l2_penalty += lasagne.regularization.regularize_layer_params(l_hid1, l2) * regul_coef_hid * (1-l1_share_hid)
-            l1_penalty += lasagne.regularization.regularize_layer_params(l_hid3, l1) * regul_coef_hid * l1_share_hid
-            l2_penalty += lasagne.regularization.regularize_layer_params(l_hid3, l2) * regul_coef_hid * (1-l1_share_hid)
+            l1_penalty = lasagne.regularization.regularize_layer_params(l_hid1, l1) * regul_coef_hid * l1_share_hid
+            l2_penalty = lasagne.regularization.regularize_layer_params(l_hid1, l2) * regul_coef_hid * (1-l1_share_hid)
+
 
             loss = loss + l1_penalty + l2_penalty
             eval_loss = eval_loss + l1_penalty + l2_penalty
@@ -189,12 +285,17 @@ class NNModel():
         
         parameters = lasagne.layers.get_all_params(self.l_out, trainable=True)
         updates = lasagne.updates.adamax(loss, parameters, learning_rate=2e-3, beta1=0.9, beta2=0.999, epsilon=1e-8)
+        #updates = lasagne.updates.adam(loss, parameters, learning_rate=1e-3, beta1=0.9, beta2=0.999, epsilon=1e-8)
+        #updates = lasagne.updates.rmsprop(loss, parameters, learning_rate=0.5, rho=0.9, epsilon=1e-06)
+        #updates = lasagne.updates.adagrad(loss, parameters, learning_rate=1.0, epsilon=1e-06)
+        #updates = lasagne.updates.sgd(loss, parameters, learning_rate=0.01)
+        #updates = lasagne.updates.nesterov_momentum(loss, parameters, 0.1, momentum=0.9)
         self.f_train = theano.function([self.X_sym, self.Y_sym], loss, updates=updates, on_unused_input='warn')
         self.f_val = theano.function([self.X_sym, self.Y_sym], eval_loss, on_unused_input='warn')
-        self.f_cross_entropy_loss = theano.function([self.X_sym, self.Y_sym], eval_cross_entropy_loss, on_unused_input='warn')
-        self.f_predict_proba = theano.function([self.X_sym], self.eval_output, on_unused_input='warn') 
-        self.f_predict = theano.function([self.X_sym], self.eval_pred, on_unused_input='warn')
-        #self.f_debug_output =  theano.function([self.X_sym], self.debug_output, on_unused_input='warn')
+        if self.bigaus:
+            self.f_predict = theano.function([self.X_sym], [mus_eval, sigmas_eval, corxy_eval, pis_eval], on_unused_input='warn')
+        else:
+            self.f_predict = theano.function([self.X_sym], output, on_unused_input='warn') 
 
     def set_params(self, params):
         lasagne.layers.set_all_param_values(self.l_out, params)
@@ -210,7 +311,7 @@ class NNModel():
                 excerpt = slice(start_idx, start_idx + batchsize)
             yield inputs[excerpt], targets[excerpt]       
     
-    def fit(self, X_train, Y_train, X_dev, Y_dev, X_test, Y_test):
+    def fit(self, X_train, Y_train, X_dev, Y_dev, X_test, Y_test, U_train, U_dev, U_test, userLocation):
         model_file = './data/lang2loc_model_' + str(self.output_size) + '_' + str(self.hidden_layer_sizes)  + '_encoder_' + \
         str(self.autoencoder) + '_sparse_' + str(self.sparse) +  '_rbf_' + str(self.rbf) + '_bigaus_' + str(self.bigaus) + '.pkl'
         if self.reload:
@@ -229,8 +330,20 @@ class NNModel():
             for batch in self.iterate_minibatches(X_train, Y_train, self.batch_size, shuffle=True):
                 x_batch, y_batch = batch
                 l_train = self.f_train(x_batch, y_batch)
-            l_val = self.f_cross_entropy_loss(X_dev, Y_dev)
-            if l_val < best_val_loss and (best_val_loss - l_val) > (0.0001 * l_val):
+                #latlon_pred = self.predict(x_batch)
+                #logging.info(latlon_pred[0])
+            l_val = self.f_val(X_dev, Y_dev)
+            latlon_pred = self.predict(X_dev)
+            logging.info(latlon_pred[0])
+            logging.info(Y_dev[0])
+            logging.info(latlon_pred[1])
+            logging.info(Y_dev[1])
+            logging.info('dev results')
+            geo_latlon_eval(U_dev, userLocation, latlon_pred)
+            logging.info('train results')
+            latlon_pred = self.predict(X_train)
+            geo_latlon_eval(U_train, userLocation, latlon_pred)
+            if l_val < best_val_loss:
                 best_val_loss = l_val
                 best_params = lasagne.layers.get_all_param_values(self.l_out)
                 n_validation_down = 0
@@ -246,8 +359,12 @@ class NNModel():
             pickle.dump(best_params, fout)
                 
     def predict(self, X):
-        pred = self.f_predict(X)
-        return pred       
+        if self.bigaus:
+            mus_eval, sigmas_eval, corxy_eval, pis_eval = self.f_predict(X)
+            selected_mus = self.pred(mus_eval, sigmas_eval, corxy_eval, pis_eval)
+        else:
+            selected_mus = self.f_predict(X)
+        return selected_mus       
 
 
           
@@ -290,7 +407,11 @@ def load_data(data_home, **kwargs):
     classLatMedian = {str(c):dl.cluster_median[c][0] for c in dl.cluster_median}
     classLonMedian = {str(c):dl.cluster_median[c][1] for c in dl.cluster_median}
     loc_train = np.array([[a[0], a[1]] for a in dl.df_train[['lat', 'lon']].values.tolist()], dtype='float32')
-    
+    loc_dev = np.array([[a[0], a[1]] for a in dl.df_dev[['lat', 'lon']].values.tolist()], dtype='float32')
+    loc_test = np.array([[a[0], a[1]] for a in dl.df_test[['lat', 'lon']].values.tolist()], dtype='float32')
+    Y_train = loc_train
+    Y_dev = loc_dev
+    Y_test = loc_test
     P_test = [str(a[0]) + ',' + str(a[1]) for a in dl.df_test[['lat', 'lon']].values.tolist()]
     P_train = [str(a[0]) + ',' + str(a[1]) for a in dl.df_train[['lat', 'lon']].values.tolist()]
     P_dev = [str(a[0]) + ',' + str(a[1]) for a in dl.df_dev[['lat', 'lon']].values.tolist()]
@@ -324,14 +445,16 @@ def train(data, **kwargs):
         mus = get_cluster_centers(loc_train, n_cluster=hid_size)
         logging.info('first mu is %s' %str(mus[0, :]))
     model = NNModel(n_epochs=1000, batch_size=batch_size, regul_coef=regul, 
-                    input_size=input_size, output_size=output_size, hidden_layer_sizes=[hid_size, hid_size, hid_size], 
-                    drop_out=True, dropout_coef=dropout_coef, early_stopping_max_down=10, 
+                    input_size=input_size, output_size=output_size, hidden_layer_sizes=[100, hid_size], 
+                    drop_out=True, dropout_coef=dropout_coef, early_stopping_max_down=100, 
                     input_sparse=True, reload=False, rbf=rbf, bigaus=bigaus, mus=mus)
 
-    model.fit(X_train, Y_train, X_dev, Y_dev, X_test, Y_test)
-    y_pred = model.predict(X_test)
-    geo_eval(Y_test, y_pred, U_test, classLatMedian, classLonMedian, userLocation)
-    
+    model.fit(X_train, Y_train, X_dev, Y_dev, X_test, Y_test, U_train, U_dev, U_test, userLocation)
+    latlon_pred = model.predict(X_dev)
+    geo_latlon_eval(U_dev, userLocation, latlon_pred)
+    #latlon_pred = model.predict(X_test)
+    #geo_latlon_eval(U_test, userLocation, latlon_pred)
+    pdb.set_trace()
 
 def parse_args(argv):
     """

@@ -374,10 +374,12 @@ class DataLoader():
         
     def tfidf(self):
         #remove hashtags and mentions
-        token_pattern = r'(?u)(?<![#@])\b\w+\b'
+        #token_pattern = r'(?u)(?<![#@])\b\w+\b'
+        #just remove mentions
+        token_pattern = r'(?u)(?<![@])\b\w+\b'
         #remove multple occurrences of a character after 2 times yesss => yess
         #re.sub(r"(.)\1+", r"\1\1", s)
-        self.vectorizer = TfidfVectorizer(tokenizer=self.tokenizer, token_pattern=r'(?u)(?<![#@])\b\w+\b', use_idf=self.idf, 
+        self.vectorizer = TfidfVectorizer(tokenizer=self.tokenizer, token_pattern=token_pattern, use_idf=self.idf, 
                                     norm=self.norm, binary=self.btf, sublinear_tf=self.subtf, 
                                     min_df=self.mindf, max_df=self.maxdf, ngram_range=(1, 1), stop_words=self.stops, 
                                      vocabulary=None, encoding=self.encoding, dtype='float32')

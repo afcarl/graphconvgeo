@@ -167,11 +167,11 @@ class BivariateGaussianLayer(Layer):
             mus_init = np.random.randn(self.num_units, 2).astype('float32')
         
         sigmas_init = np.abs(np.random.randn(self.num_units, 2).reshape((self.num_units,2))).astype('float32')
-        sigma12_init = self.sigmas_init = np.random.randn(self.num_units,).reshape((self.num_units,)).astype('float32')
+        covxy_init = self.sigmas_init = np.random.randn(self.num_units,).reshape((self.num_units,)).astype('float32')
         
         self.mus = self.add_param(mus_init, mus_init.shape, name='mus')
         self.sigmas = self.add_param(sigmas_init, sigmas_init.shape, name='sigmas')
-        self.sigma12 = self.add_param(sigma12_init, sigma12_init.shape, name='sigma12')
+        self.covxy = self.add_param(covxy_init, covxy_init.shape, name='sigma12')
 
     def get_output_shape_for(self, input_shape):
         return (input_shape[0], self.num_units)        
@@ -189,16 +189,16 @@ class BivariateGaussianLayer(Layer):
         diff = X-mus
         #multiply x-mu1 , x-mu2 the result should be number_of_samples x number_of_hidden
         diffprod = T.prod(diff, axis=-1)
-        #correlation x, y member of (-1, 1)
-        cor12 = T.nnet.nnet.softsign(self.sigma12 * sigmainvprods)
+        #correlation x, y member of (-1, 1) devide covariance by product of sigmaxx , sigmayy
+        corxy = T.nnet.nnet.softsign(self.covxy * sigmainvprods)
         #power 2 of cor12
-        cor122 = cor12 **2
+        corxy2 = corxy **2
         diff2 = diff ** 2
         diffsigma = diff2 / sigmas2
         diffsigmanorm = T.sum(diffsigma, axis=-1)
-        z = diffsigmanorm - 2 * cor12 * diffprod * sigmainvprods
-        oneminuscor122inv = 1.0 / (1.0 - cor122)
-        expterm = T.exp(-0.5 * z * oneminuscor122inv)
-        probs = (0.5 / np.pi) * sigmainvprods * T.sqrt(oneminuscor122inv) * expterm
+        z = diffsigmanorm - 2 * corxy * diffprod * sigmainvprods
+        oneminuscorxy2inv = 1.0 / (1.0 - corxy2)
+        expterm = T.exp(-0.5 * z * oneminuscorxy2inv)
+        probs = (0.5 / np.pi) * sigmainvprods * T.sqrt(oneminuscorxy2inv) * expterm
         return probs
 

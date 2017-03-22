@@ -98,6 +98,13 @@ def in_us(lat, lon):
             return state
     return None
 
+def inspect_inputs(i, node, fn):
+    print(i, node, "input(s) shape(s):", [input[0].shape for input in fn.inputs])
+    #print(i, node, "input(s) stride(s):", [input.strides for input in fn.inputs], end='')
+
+def inspect_outputs(i, node, fn):
+    print(" output(s) shape(s):", [output[0].shape for output in fn.outputs])
+    #print(" output(s) stride(s):", [output.strides for output in fn.outputs])    
 
 
 
@@ -108,67 +115,55 @@ class NNModel():
                  regul_coef=1e-6,
                  input_size=None,
                  output_size = None, 
-                 hidden_layer_sizes=None, 
+                 hid_size=500, 
                  drop_out=False, 
                  dropout_coef=0.5,
                  early_stopping_max_down=10,
                  dtype='float32',
-                 autoencoder=False,
-                 input_sparse=False,
+                 autoencoder=100,
                  reload=False,
-                 rbf=False,
-                 bigaus=False,
+                 n_gaus_comp=500,
                  mus=None):
         self.n_epochs = n_epochs
         self.batch_size = batch_size
         self.regul_coef = regul_coef
-        self.hidden_layer_sizes = hidden_layer_sizes
-        self.drop_out = drop_out
+        self.hid_size = hid_size
         self.dropout_coef = dropout_coef
         self.early_stopping_max_down = early_stopping_max_down
         self.dtype = dtype
         self.input_size = input_size
         self.output_size = output_size
         self.autoencoder = autoencoder
-        self.sparse = input_sparse
         self.reload = reload
-        self.rbf = rbf
-        self.bigaus = bigaus
+        self.n_gaus_comp = n_gaus_comp
         self.mus = mus
-        logging.info('building nn model with hidden size %s and output size %d input_sparse %s' % (str(self.hidden_layer_sizes), self.output_size, str(self.sparse)))
+        logging.info('building nn model with %d gaussian components and %d hidden layer...' % (self.n_gaus_comp, self.hid_size))
         self.build()
         
         
     def build(self):
-        if self.sparse:
-            self.X_sym = S.csr_matrix(name='inputs', dtype=self.dtype)
-        else:
-            self.X_sym = T.matrix()
+
+        self.X_sym = T.matrix()
         self.Y_sym = T.matrix()
-        if self.autoencoder:
-            logging.info('autoencoder is on!')
-        else:
-            logging.info('autoencoder is off!')
+
         l_in = lasagne.layers.InputLayer(shape=(None, self.input_size),
                                          input_var=self.X_sym)
 
 
-        logging.info('adding bivariate gaussian layer...')
-        l_gaus = BivariateGaussianLayer(l_in, num_units=self.hidden_layer_sizes[0], mus=self.mus)
+        logging.info('adding %d-comp bivariate gaussian layer...' %self.n_gaus_comp)
+        l_gaus = BivariateGaussianLayer(l_in, num_units=self.n_gaus_comp, mus=self.mus)
 
         self.gaus_output = lasagne.layers.get_output(l_gaus, self.X_sym)
 
         self.l_out_autoencoder = lasagne.layers.DenseLayer(l_gaus, num_units=self.input_size, 
                                                            nonlinearity=lasagne.nonlinearities.linear,
                                                            W=lasagne.init.GlorotUniform())
-        if len(self.hidden_layer_sizes) > 1:
-            for h_size in self.hidden_layer_sizes[1:]:
-                l_hid = lasagne.layers.DenseLayer(l_gaus, num_units=h_size, 
-                                                   nonlinearity=lasagne.nonlinearities.tanh,
-                                                   W=lasagne.init.GlorotUniform())
-                if self.drop_out and self.dropout_coef > 0:
-                    l_hid = lasagne.layers.dropout(l_hid, p=self.dropout_coef)
-        
+        if self.hid_size:
+            l_hid = lasagne.layers.DenseLayer(l_gaus, num_units=self.hid_size, 
+                                              nonlinearity=lasagne.nonlinearities.tanh,
+                                              W=lasagne.init.GlorotUniform())
+        else:
+            l_hid = l_gaus
         
         self.l_out = lasagne.layers.DenseLayer(l_hid, num_units=self.output_size,
                                           nonlinearity=lasagne.nonlinearities.softmax,
@@ -216,13 +211,13 @@ class NNModel():
 
         autoencoder_parameters = lasagne.layers.get_all_params(self.l_out_autoencoder, trainable=True)
         autoencoder_updates = lasagne.updates.adamax(autoencoder_loss, autoencoder_parameters, learning_rate=2e-3, beta1=0.9, beta2=0.999, epsilon=1e-8)
-        self.f_train_autoencoder = theano.function([self.X_sym, self.Y_sym], autoencoder_loss, updates=autoencoder_updates, on_unused_input='warn')
+        self.f_train_autoencoder = theano.function([self.X_sym, self.Y_sym], autoencoder_loss, updates=autoencoder_updates, on_unused_input='warn')#,  mode=theano.compile.MonitorMode(pre_func=inspect_inputs, post_func=inspect_outputs))
         self.f_val_autoencoder = theano.function([self.X_sym, self.Y_sym], autoencoder_loss, on_unused_input='warn')
         self.f_predict_autoencoder = theano.function([self.X_sym], self.autoencoder_eval_output, on_unused_input='warn')        
 
     def set_params(self, params):
         lasagne.layers.set_all_param_values(self.l_out, params)
-    
+
     def iterate_minibatches(self, inputs, targets, batchsize, shuffle=False):
         assert inputs.shape[0] == targets.shape[0]
         if shuffle:
@@ -235,9 +230,8 @@ class NNModel():
                 excerpt = slice(start_idx, start_idx + batchsize)
             yield inputs[excerpt], targets[excerpt]       
     
-    def fit(self, X_train, Y_train, X_dev, Y_dev, X_test, Y_test, autoencoder_steps=1000):
-        model_file = './data/loc2lang_model_' + str(self.output_size) + '_' + str(self.hidden_layer_sizes)  + '_encoder_' + \
-        str(self.autoencoder) + '_sparse_' + str(self.sparse) +  '_rbf_' + str(self.rbf) + '_bigaus_' + str(self.bigaus) + '.pkl'
+    def fit(self, X_train, Y_train, X_dev, Y_dev, X_test, Y_test):
+        model_file = './data/loc2lang_hid%d_gaus%d_out%d_autoenc%d.pkl' %(self.hid_size, self.n_gaus_comp, self.output_size, self.autoencoder)
         if self.reload:
             if path.exists(model_file):
                 logging.info('loading the model from %s' %model_file)
@@ -245,10 +239,10 @@ class NNModel():
                     params = pickle.load(fin)
                 self.set_params(params)
                 return
-        logging.info('autoencoder training with %d n_epochs and  %d batch_size' %(autoencoder_steps, self.batch_size))
+        logging.info('autoencoder training with %d n_epochs and  %d batch_size' %(self.autoencoder, self.batch_size))
         best_l_autoencoder_val = 1000000
         auto_down = 0
-        for i in xrange(autoencoder_steps):
+        for i in xrange(self.autoencoder):
             autoencoder_losses = []
             for batch in self.iterate_minibatches(X_train, X_train, self.batch_size, shuffle=True):
                 x_batch, y_batch = batch
@@ -523,39 +517,39 @@ def load_data(data_home, **kwargs):
 def train(data, **kwargs):
     dropout_coef = kwargs.get('dropout_coef', 0.5)
     regul = kwargs.get('regul_coef', 1e-6)
-    hid_size = kwargs.get('hidden_size', 200)
+    hid_size = kwargs.get('hidden_size', 500)
     autoencoder = kwargs.get('autoencoder', False)
     grid_transform = kwargs.get('grid', False)
-    rbf = kwargs.get('rbf', False)
-    bigaus = kwargs.get('bigaus', False)
+    n_gaus_comp = kwargs.get('ncomp', 500)
     dataset_name = kwargs.get('dataset_name')
     kmeans_mu = kwargs.get('kmeans', False)
     loc_train, W_train, loc_dev, W_dev, loc_test, W_test, vocab = data
     input_size = loc_train.shape[1]
     output_size = W_train.shape[1]
     batch_size = 100 if W_train.shape[0] < 10000 else 10000
-    hid_size_1 = 2 * hid_size
+
     mus = None
-    if (rbf or bigaus) and kmeans_mu:
+    if kmeans_mu:
         logging.info('initializing mus by clustering training points')
-        mus = get_cluster_centers(loc_train, n_cluster=hid_size)
+        mus = get_cluster_centers(loc_train, n_cluster=n_gaus_comp)
         logging.info('first mu is %s' %str(mus[0, :]))
-    elif rbf or bigaus:
+    else:
         #set all mus to center of US
         indices = np.arange(loc_train.shape[0])
         np.random.shuffle(indices)
-        random_indices = indices[0:hid_size]
+        random_indices = indices[0:n_gaus_comp]
         mus = loc_train[random_indices, :]
         for i in range(mus.shape[0]):
             mus[i, 0] = 39.5 + np.random.uniform(low=-3, high=+3)
             mus[i, 1] = -98.35 + np.random.uniform(low=-3, high=+3)
         mus = mus.astype('float32')
+    
     model = NNModel(n_epochs=1000, batch_size=batch_size, regul_coef=regul, 
-                    input_size=input_size, output_size=output_size, hidden_layer_sizes=[hid_size, hid_size_1], 
+                    input_size=input_size, output_size=output_size, hid_size=hid_size, 
                     drop_out=True, dropout_coef=dropout_coef, early_stopping_max_down=10, 
-                    autoencoder=autoencoder, input_sparse=sp.sparse.issparse(loc_train), reload=False, rbf=rbf, bigaus=bigaus, mus=mus)
+                    autoencoder=autoencoder, reload=False, n_gaus_comp=n_gaus_comp, mus=mus)
     #pdb.set_trace()
-    model.fit(loc_train, W_train, loc_dev, W_dev, loc_test, W_test, autoencoder_steps=3000)
+    model.fit(loc_train, W_train, loc_dev, W_dev, loc_test, W_test)
     #model.fit(loc_train, loc_train, loc_dev, loc_dev, loc_test, loc_test)
     
     pred_test_autoencoder = model.predict_autoencoder(loc_test)
@@ -565,7 +559,7 @@ def train(data, **kwargs):
     k = 50
     with open('./data/cities.json', 'r') as fin:
         cities = json.load(fin)
-    local_word_file = './data/local_words_'  + str(W_train.shape)+ '_' + str(hid_size) + '.txt'
+    local_word_file = './data/local_words_'  + str(W_train.shape)+ '_' + str(n_gaus_comp) + '.txt'
     with codecs.open(local_word_file, 'w', encoding='utf-8') as fout:
         cities = cities[0:100]
         for city in cities:
@@ -617,7 +611,7 @@ def train(data, **kwargs):
     #grid representation
 
     preds = model.predict(coords)
-    info_file = 'coords-preds-vocab' + str(W_train.shape[0])+ '_' + str(hid_size) + '.pkl'
+    info_file = 'coords-preds-vocab' + str(W_train.shape[0])+ '_' + str(n_gaus_comp) + '.pkl'
     logging.info('dumping the results in %s' %info_file)
     with open(info_file, 'wb') as fout:
         pickle.dump((coords, preds, vocab), fout)
@@ -973,7 +967,7 @@ def parse_args(argv):
     parser.add_argument( '-i','--dataset', metavar='str',  help='dataset for dialectology',  type=str, default='na')
     parser.add_argument( '-bucket','--bucket', metavar='int',  help='discretisation bucket size',  type=int, default=300)
     parser.add_argument( '-batch','--batch', metavar='int',  help='SGD batch size',  type=int, default=500)
-    parser.add_argument( '-hid','--hidden', metavar='int',  help='Hidden layer size',  type=int, default=500)
+    parser.add_argument( '-hid','--hidden', metavar='int',  help='Hidden layer size after bigaus layer',  type=int, default=500)
     parser.add_argument( '-mindf','--mindf', metavar='int',  help='minimum document frequency in BoW',  type=int, default=10)
     parser.add_argument( '-d','--dir', metavar='str',  help='home directory',  type=str, default='./data')
     parser.add_argument( '-enc','--encoding', metavar='str',  help='Data Encoding (e.g. latin1, utf-8)',  type=str, default='utf-8')
@@ -984,16 +978,16 @@ def parse_args(argv):
     parser.add_argument( '-map', '--map', action='store_true',  help='if true just draw maps from pre-trained model')
     parser.add_argument( '-tune', '--tune', action='store_true',  help='if true tune the hyper-parameters') 
     parser.add_argument( '-tf', '--tensorflow', action='store_true',  help='if exists run with tensorflow') 
-    parser.add_argument( '-autoencoder', '--autoencoder', action='store_true',  help='if exists adds autoencoder to NN') 
+    parser.add_argument( '-autoencoder', '--autoencoder', type=int,  help='the number of autoencoder steps before training', default=0) 
     parser.add_argument( '-grid', '--grid', action='store_true',  help='if exists transforms the input from lat/lon to distance from grids on map') 
-    parser.add_argument( '-rbf', '--rbf', action='store_true',  help='if exists transforms the input from lat/lon to rbf probabilities and learns centers and sigmas as well.') 
-    parser.add_argument( '-bigaus', '--bigaus', action='store_true',  help='if exists transforms the input from lat/lon to bivariate gaussian probabilities and learns centers and sigmas as well.') 
+    #parser.add_argument( '-rbf', '--rbf', action='store_true',  help='if exists transforms the input from lat/lon to rbf probabilities and learns centers and sigmas as well.') 
+    parser.add_argument( '-ncomp', type=int,  help='the number of bivariate gaussians after the input layer', default=500) 
     parser.add_argument( '-m', '--message', type=str) 
     parser.add_argument( '-vbi', '--vbi', type=str,  help='if exists load params from vbi file and visualize bivariate gaussians on a map', default=None) 
     args = parser.parse_args(argv)
     return args
 if __name__ == '__main__':
-    #nice -n 10 python loc2lang.py -d ~/datasets/na/processed_data/ -enc utf-8 -reg 0 -drop 0.0 -mindf 200 -hid 1000 -bigaus -autoencoder -map
+    #nice -n 10 python loc2lang.py -d ~/datasets/na/processed_data/ -enc utf-8 -reg 0 -drop 0.0 -mindf 200 -hid 1000 -bigaus -autoencoder 100 -map
     args = parse_args(sys.argv[1:])
     datadir = args.dir
     dataset_name = datadir.split('/')[-3]
@@ -1005,4 +999,4 @@ if __name__ == '__main__':
     else:
         data = load_data(data_home=args.dir, encoding=args.encoding, mindf=args.mindf, grid=args.grid, dataset_name=dataset_name)
         train(data, regul_coef=args.regularization, dropout_coef=args.dropout, 
-              hidden_size=args.hidden, autoencoder=args.autoencoder, grid=args.grid, rbf=args.rbf, bigaus=args.bigaus, dataset_name=dataset_name)
+              hidden_size=args.hidden, autoencoder=args.autoencoder, ncomp=args.ncomp, dataset_name=dataset_name)

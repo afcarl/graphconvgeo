@@ -166,7 +166,7 @@ class BivariateGaussianLayer(Layer):
         else:
             mus_init = np.random.randn(self.num_units, 2).astype('float32')
         
-        sigmas_init = np.array([10, 10]).astype('float32') * np.abs(np.random.randn(self.num_units, 2).reshape((self.num_units,2))).astype('float32')
+        sigmas_init = np.array([5, 5]).astype('float32') * np.abs(np.random.randn(self.num_units, 2).reshape((self.num_units,2))).astype('float32')
         corxy_init = np.random.randn(self.num_units,).reshape((self.num_units,)).astype('float32')
         
         self.mus = self.add_param(mus_init, mus_init.shape, name='mus')

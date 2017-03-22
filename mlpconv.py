@@ -262,7 +262,7 @@ class MLPCONV():
         #updates = lasagne.updates.adadelta(loss, parameters, learning_rate=0.1, rho=0.95, epsilon=1e-6)
         updates = lasagne.updates.adam(loss, parameters, learning_rate=4e-3, beta1=0.9, beta2=0.999, epsilon=1e-8)
         
-        self.f_train = theano.function([self.X_sym, self.y_sym, self.target_indices_sym], [loss, self.acc], updates=updates, on_unused_input='warn', mode=theano.compile.MonitorMode(pre_func=inspect_inputs, post_func=inspect_outputs))
+        self.f_train = theano.function([self.X_sym, self.y_sym, self.target_indices_sym], [loss, self.acc], updates=updates, on_unused_input='warn')#, mode=theano.compile.MonitorMode(pre_func=inspect_inputs, post_func=inspect_outputs))
         self.f_val = theano.function([self.X_sym, self.y_sym, self.target_indices_sym], [eval_loss, self.eval_acc], on_unused_input='warn')
         self.f_predict = theano.function([self.X_sym, self.target_indices_sym], self.eval_pred, on_unused_input='warn')
         self.f_predict_proba = theano.function([self.X_sym, self.target_indices_sym], self.eval_output, on_unused_input='warn')

@@ -327,9 +327,12 @@ class NNModel():
         n_validation_down = 0
         
         for step in range(self.n_epochs):
+            l_trains = []
             for batch in self.iterate_minibatches(X_train, Y_train, self.batch_size, shuffle=True):
                 x_batch, y_batch = batch
                 l_train = self.f_train(x_batch, y_batch)
+                l_trains.append(l_train)
+            l_train = np.mean(l_trains)
                 #latlon_pred = self.predict(x_batch)
                 #logging.info(latlon_pred[0])
             l_val = self.f_val(X_dev, Y_dev)
@@ -464,77 +467,30 @@ def parse_args(argv):
     """
 
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '-i','--dataset', metavar='str',
-        help='dataset for dialectology',
-        type=str, default='na')
-    parser.add_argument(
-        '-bucket','--bucket', metavar='int',
-        help='discretisation bucket size',
-        type=int, default=300)
-    parser.add_argument(
-        '-batch','--batch', metavar='int',
-        help='SGD batch size',
-        type=int, default=500)
-    parser.add_argument(
-        '-hid','--hidden', metavar='int',
-        help='Hidden layer size',
-        type=int, default=500)
-    parser.add_argument(
-        '-mindf','--mindf', metavar='int',
-        help='minimum document frequency in BoW',
-        type=int, default=10)
-    parser.add_argument(
-        '-d','--dir', metavar='str',
-        help='home directory',
-        type=str, default='./data')
-    parser.add_argument(
-        '-enc','--encoding', metavar='str',
-        help='Data Encoding (e.g. latin1, utf-8)',
-        type=str, default='utf-8')
-    parser.add_argument(
-        '-reg','--regularization', metavar='float',
-        help='regularization coefficient)',
-        type=float, default=1e-6)
-    parser.add_argument(
-        '-drop','--dropout', metavar='float',
-        help='dropout coef default 0.5',
-        type=float, default=0.5)
-    parser.add_argument(
-        '-cel','--celebrity', metavar='int',
-        help='celebrity threshold',
-        type=int, default=10)
-    
-    parser.add_argument(
-        '-conv', '--convolution', action='store_true',
-        help='if true do convolution')
-    parser.add_argument(
-        '-map', '--map', action='store_true',
-        help='if true just draw maps from pre-trained model')
-    parser.add_argument(
-        '-tune', '--tune', action='store_true',
-        help='if true tune the hyper-parameters')   
-    parser.add_argument(
-        '-tf', '--tensorflow', action='store_true',
-        help='if exists run with tensorflow') 
-    parser.add_argument(
-        '-autoencoder', '--autoencoder', action='store_true',
-        help='if exists adds autoencoder to NN') 
-    parser.add_argument(
-        '-grid', '--grid', action='store_true',
-        help='if exists transforms the input from lat/lon to distance from grids on map') 
-    parser.add_argument(
-        '-rbf', '--rbf', action='store_true',
-        help='if exists transforms the input from lat/lon to rbf probabilities and learns centers and sigmas as well.') 
-    parser.add_argument(
-        '-bigaus', '--bigaus', action='store_true',
-        help='if exists transforms the input from lat/lon to bivariate gaussian probabilities and learns centers and sigmas as well.') 
-    parser.add_argument(
-        '-m', '--message', type=str) 
+    parser.add_argument('-i','--dataset', metavar='str', help='dataset for dialectology', type=str, default='na')
+    parser.add_argument('-bucket','--bucket', metavar='int', help='discretisation bucket size', type=int, default=300)
+    parser.add_argument('-batch','--batch', metavar='int', help='SGD batch size', type=int, default=500)
+    parser.add_argument('-hid','--hidden', metavar='int', help='Hidden layer size', type=int, default=500)
+    parser.add_argument('-mindf','--mindf', metavar='int', help='minimum document frequency in BoW', type=int, default=10)
+    parser.add_argument('-d','--dir', metavar='str', help='home directory', type=str, default='./data')
+    parser.add_argument('-enc','--encoding', metavar='str', help='Data Encoding (e.g. latin1, utf-8)', type=str, default='utf-8')
+    parser.add_argument('-reg','--regularization', metavar='float', help='regularization coefficient)', type=float, default=1e-6)
+    parser.add_argument('-drop','--dropout', metavar='float', help='dropout coef default 0.5', type=float, default=0.5)
+    parser.add_argument('-cel','--celebrity', metavar='int', help='celebrity threshold', type=int, default=10)
+    parser.add_argument('-conv', '--convolution', action='store_true', help='if true do convolution')
+    parser.add_argument('-map', '--map', action='store_true', help='if true just draw maps from pre-trained model')
+    parser.add_argument('-tune', '--tune', action='store_true', help='if true tune the hyper-parameters') 
+    parser.add_argument('-tf', '--tensorflow', action='store_true', help='if exists run with tensorflow') 
+    parser.add_argument('-autoencoder', '--autoencoder', action='store_true', help='if exists adds autoencoder to NN') 
+    parser.add_argument('-grid', '--grid', action='store_true', help='if exists transforms the input from lat/lon to distance from grids on map') 
+    parser.add_argument('-rbf', '--rbf', action='store_true', help='if exists transforms the input from lat/lon to rbf probabilities and learns centers and sigmas as well.') 
+    parser.add_argument('-bigaus', '--bigaus', action='store_true', help='if exists transforms the input from lat/lon to bivariate gaussian probabilities and learns centers and sigmas as well.') 
+    parser.add_argument('-m', '--message', type=str) 
     args = parser.parse_args(argv)
     return args
+
 if __name__ == '__main__':
-    #nice -n 10 python loc2lang.py -d ~/datasets/na/processed_data/ -enc utf-8 -reg 0 -drop 0.0 -mindf 200 -hid 1000 -bigaus -autoencoder -map
+    #nice -n 10 python loc2lang.py -d ~/datasets/na/processed_data/ -enc utf-8 -reg 0 -drop 0.0 -mindf 200 -hid 1000 -bigaus 
     args = parse_args(sys.argv[1:])
     datadir = args.dir
     dataset_name = datadir.split('/')[-3]

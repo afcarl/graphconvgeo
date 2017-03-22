@@ -31,7 +31,7 @@ import tensorflow as tf
 import argparse
 import sys 
 logging.basicConfig(format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
-
+logging.info('In order to work for big datasets fix https://github.com/Theano/Theano/pull/5721 should be applied to theano.')
 np.random.seed(77)
 
 
@@ -418,52 +418,19 @@ def parse_args(argv):
     """
 
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '-i','--dataset', metavar='str',
-        help='dataset for dialectology',
-        type=str, default='na')
-    parser.add_argument(
-        '-bucket','--bucket', metavar='int',
-        help='discretisation bucket size',
-        type=int, default=300)
-    parser.add_argument(
-        '-batch','--batch', metavar='int',
-        help='SGD batch size',
-        type=int, default=500)
-    parser.add_argument(
-        '-hid','--hidden', metavar='int',
-        help='Hidden layer size',
-        type=int, default=500)
-    parser.add_argument(
-        '-mindf','--mindf', metavar='int',
-        help='minimum document frequency in BoW',
-        type=int, default=10)
-    parser.add_argument(
-        '-d','--dir', metavar='str',
-        help='home directory',
-        type=str, default='./data')
-    parser.add_argument(
-        '-enc','--encoding', metavar='str',
-        help='Data Encoding (e.g. latin1, utf-8)',
-        type=str, default='utf-8')
-    parser.add_argument(
-        '-reg','--regularization', metavar='float',
-        help='regularization coefficient)',
-        type=float, default=1e-6)
-    parser.add_argument(
-        '-cel','--celebrity', metavar='int',
-        help='celebrity threshold',
-        type=int, default=10)
-    
-    parser.add_argument(
-        '-conv', '--convolution', action='store_true',
-        help='if true do convolution')
-    parser.add_argument(
-        '-tune', '--tune', action='store_true',
-        help='if true tune the hyper-parameters')   
-    parser.add_argument(
-        '-tf', '--tensorflow', action='store_true',
-        help='if exists run with tensorflow') 
+    parser.add_argument( '-i','--dataset', metavar='str', help='dataset for dialectology', type=str, default='na')
+    parser.add_argument( '-bucket','--bucket', metavar='int', help='discretisation bucket size', type=int, default=300)
+    parser.add_argument( '-batch','--batch', metavar='int', help='SGD batch size', type=int, default=500)
+    parser.add_argument( '-hid','--hidden', metavar='int', help='Hidden layer size', type=int, default=500)
+    parser.add_argument( '-mindf','--mindf', metavar='int', help='minimum document frequency in BoW', type=int, default=10)
+    parser.add_argument( '-d','--dir', metavar='str', help='home directory', type=str, default='./data')
+    parser.add_argument( '-enc','--encoding', metavar='str', help='Data Encoding (e.g. latin1, utf-8)', type=str, default='utf-8')
+    parser.add_argument( '-reg','--regularization', metavar='float', help='regularization coefficient)', type=float, default=1e-6)
+    parser.add_argument( '-cel','--celebrity', metavar='int', help='celebrity threshold', type=int, default=10)
+    parser.add_argument( '-conv', '--convolution', action='store_true', help='if true do convolution')
+    parser.add_argument( '-tune', '--tune', action='store_true', help='if true tune the hyper-parameters')
+    parser.add_argument( '-tf', '--tensorflow', action='store_true', help='if exists run with tensorflow')
+
     args = parser.parse_args(argv)
     return args
 

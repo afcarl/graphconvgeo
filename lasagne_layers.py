@@ -166,12 +166,12 @@ class BivariateGaussianLayer(Layer):
         else:
             mus_init = np.random.randn(self.num_units, 2).astype('float32')
         
-        sigmas_init = np.abs(np.random.randn(self.num_units, 2).reshape((self.num_units,2))).astype('float32')
-        covxy_init = self.sigmas_init = np.random.randn(self.num_units,).reshape((self.num_units,)).astype('float32')
+        sigmas_init = np.array([10, 10]).astype('float32') * np.abs(np.random.randn(self.num_units, 2).reshape((self.num_units,2))).astype('float32')
+        corxy_init = np.random.randn(self.num_units,).reshape((self.num_units,)).astype('float32')
         
         self.mus = self.add_param(mus_init, mus_init.shape, name='mus')
         self.sigmas = self.add_param(sigmas_init, sigmas_init.shape, name='sigmas')
-        self.covxy = self.add_param(covxy_init, covxy_init.shape, name='sigma12')
+        self.corxy = self.add_param(corxy_init, corxy_init.shape, name='corxy')
 
     def get_output_shape_for(self, input_shape):
         return (input_shape[0], self.num_units)        
@@ -189,16 +189,20 @@ class BivariateGaussianLayer(Layer):
         diff = X-mus
         #multiply x-mu1 , x-mu2 the result should be number_of_samples x number_of_hidden
         diffprod = T.prod(diff, axis=-1)
-        #correlation x, y member of (-1, 1) devide covariance by product of sigmaxx , sigmayy
-        corxy = T.nnet.nnet.softsign(self.covxy * sigmainvprods)
-        #power 2 of cor12
+        #correlation x, y member of (-1, 1) 
+        corxy = T.nnet.nnet.softsign(self.corxy)
+        #power 2 of corxy
         corxy2 = corxy **2
         diff2 = diff ** 2
         diffsigma = diff2 / sigmas2
         diffsigmanorm = T.sum(diffsigma, axis=-1)
         z = diffsigmanorm - 2 * corxy * diffprod * sigmainvprods
         oneminuscorxy2inv = 1.0 / (1.0 - corxy2)
-        expterm = T.exp(-0.5 * z * oneminuscorxy2inv)
-        probs = (0.5 / np.pi) * sigmainvprods * T.sqrt(oneminuscorxy2inv) * expterm
+        expterm = -0.5 * z * oneminuscorxy2inv
+        #a trick for numerical reasons: a1 * a2 * exp(b) == exp(log(a1) + log(a2) + b)
+        #probs = (0.5 / np.pi) * sigmainvprods * T.sqrt(oneminuscorxy2inv) * T.exp(expterm)
+        probs = T.exp(T.log(0.5/np.pi) + T.log(sigmainvprods) + T.log(T.sqrt(oneminuscorxy2inv)) + expterm)
+        
         return probs
 
+    

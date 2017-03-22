@@ -252,7 +252,7 @@ def efficient_collaboration_weighted_projected_graph2(B, nodes):
 class DataLoader():
     def __init__(self, data_home, bucket_size=50, encoding='utf-8', 
                  celebrity_threshold=10, one_hot_labels=False, mindf=10, maxdf=0.2,
-                 norm='l2', idf=True, btf=True, tokenizer=None, subtf=False, stops=None):
+                 norm='l2', idf=True, btf=True, tokenizer=None, subtf=False, stops=None, token_pattern=r'(?u)(?<![#@])\b\w+\b'):
         self.data_home = data_home
         self.bucket_size = bucket_size
         self.encoding = encoding
@@ -266,6 +266,7 @@ class DataLoader():
         self.tokenizer = tokenizer
         self.subtf = subtf
         self.stops = stops if stops else 'english'
+        self.token_pattern = token_pattern
         
     def load_data(self):
         logging.info('loading the dataset from %s' %self.data_home)
@@ -376,10 +377,10 @@ class DataLoader():
         #remove hashtags and mentions
         #token_pattern = r'(?u)(?<![#@])\b\w+\b'
         #just remove mentions
-        token_pattern = r'(?u)(?<![@])\b\w+\b'
+        #token_pattern = r'(?u)(?<![@])\b\w+\b'
         #remove multple occurrences of a character after 2 times yesss => yess
         #re.sub(r"(.)\1+", r"\1\1", s)
-        self.vectorizer = TfidfVectorizer(tokenizer=self.tokenizer, token_pattern=token_pattern, use_idf=self.idf, 
+        self.vectorizer = TfidfVectorizer(tokenizer=self.tokenizer, token_pattern=self.token_pattern, use_idf=self.idf, 
                                     norm=self.norm, binary=self.btf, sublinear_tf=self.subtf, 
                                     min_df=self.mindf, max_df=self.maxdf, ngram_range=(1, 1), stop_words=self.stops, 
                                      vocabulary=None, encoding=self.encoding, dtype='float32')

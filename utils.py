@@ -3,6 +3,13 @@ Created on 5 Mar 2017
 
 @author: af
 '''
+import numpy as np
+#from matplotlib.patches import Polygon
+import pdb
+import json
+import pickle
+from collections import Counter
+
 short_state_names = {
        # 'AK': 'Alaska',
         'AL': 'Alabama',
@@ -74,3 +81,40 @@ def get_us_city_name():
             for word in words:
                 all_us_city_names.add(word)
     return all_us_city_names
+
+def retrieve_location_from_coordinates():
+
+    points = []
+    #read points from a file
+    with open('./data/latlon_world.txt', 'r') as fin:
+        for line in fin:
+            line = line.strip()
+            lat, lon = line.split('\t')
+            lat, lon = float(lat), float(lon)
+            point = (lat, lon)
+            points.append(point)
+    #read point city-countries from http://people.eng.unimelb.edu.au/tbaldwin/resources/jair2014-geoloc/
+    latlon_country = {}
+    with open('./data/han_cook_baldwin.geo', 'r') as fin:
+        for line in fin:
+            line = line.strip()
+            fields = line.split('\t')
+            country = fields[0].split('-')[-1].upper()
+            lat = float(fields[2])
+            lon = float(fields[3])
+            latlon_country[(lat, lon)] = country
+    
+    country_count = Counter()
+    for point in points:
+        country = latlon_country[point]
+        country_count[country] += 1
+    countries = [c for c, count in country_count.iteritems() if count>100]
+    with open('./data/country_count.txt', 'w') as fout:
+        json.dump(countries, fout)
+
+if __name__ == '__main__':
+    retrieve_location_from_coordinates()
+        
+        
+    
+        

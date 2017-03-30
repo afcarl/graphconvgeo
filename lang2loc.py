@@ -46,7 +46,6 @@ from sklearn.preprocessing import normalize
 from haversine import haversine
 from _collections import defaultdict
 from scipy import stats
-from twokenize import tokenize
 from mpl_toolkits.basemap import Basemap, cm, maskoceans
 from scipy.interpolate import griddata as gd
 from lasagne_layers import SparseInputDenseLayer, GaussianRBFLayer, DiagonalBivariateGaussianLayer, BivariateGaussianLayer
@@ -88,8 +87,8 @@ def geo_latlon_eval(U_eval, userLocation, latlon_pred):
         distance = haversine((lat, lon), (lat_pred, lon_pred))
         distances.append(distance)
     acc_at_161 = 100 * len([d for d in distances if d < 161]) / float(len(distances))
-    #logging.info( "Mean: " + str(int(np.mean(distances))) + " Median: " + str(int(np.median(distances))) + " Acc@161: " + str(int(acc_at_161)))
-    logging.info("Mean %f Median %f acc@161 %f" %(np.mean(distances), np.median(distances), acc_at_161))
+    logging.info( "Mean: " + str(int(np.mean(distances))) + " Median: " + str(int(np.median(distances))) + " Acc@161: " + str(int(acc_at_161)))
+    #logging.info("Mean %f Median %f acc@161 %f" %(np.mean(distances), np.median(distances), acc_at_161))
     return np.mean(distances), np.median(distances), acc_at_161
 
 class NNModel_lang2loc():
@@ -195,7 +194,7 @@ class NNModel_lang2loc():
         select the component with the highest prob (ignore sum and pis)
         '''
         if prediction_method == 'mixture':
-            logging.info('The component with highest pi and lowest sigmas are used for prediction.')
+            logging.info('predicting the best mixture mus')
             X = mus[:, :, :, np.newaxis]
             musex = mus[:, :, np.newaxis, :]
             sigmasex = sigmas[:, :, :, np.newaxis]
@@ -400,12 +399,6 @@ class NNModel_lang2loc():
     
     def fit(self, X_train, Y_train, X_dev, Y_dev, X_test, Y_test, U_train, U_dev, U_test, userLocation):
         model_file = './data/lang2loc_hid%d_gaus%d_out%d_autoenc%d.pkl' %(self.hid_size, self.n_bigaus_comp, self.output_size, self.autoencoder)
-        self.X_train = X_train
-        self.Y_train = Y_train
-        self.X_dev = X_dev
-        self.Y_dev = Y_dev
-        self.X_test = X_test
-        self.Y_test = Y_test
         if self.reload:
             if path.exists(model_file):
                 logging.info('loading the model from %s' %model_file)
@@ -432,7 +425,13 @@ class NNModel_lang2loc():
             l_train = np.mean(l_trains)
                 #latlon_pred = self.predict(x_batch)
                 #logging.info(latlon_pred[0])
-            l_val = self.f_val(X_dev, Y_dev)
+            l_vals = []
+            for batch in self.iterate_minibatches(X_dev, Y_dev, self.batch_size, shuffle=False):
+                x_batch, y_batch = batch
+                l_val = self.f_val(x_batch, y_batch)
+                l_vals.append(l_val)
+            l_val = np.mean(l_vals)
+            '''
             if step % 10 == 0:
                 if self.sqerror:
                     latlon_pred = self.predict_regression(X_dev)
@@ -445,6 +444,7 @@ class NNModel_lang2loc():
                 logging.info('dev results')                
                 geo_latlon_eval(U_dev, userLocation, latlon_pred)
             #commented because it consumes a lot of memory (should be done in batches).
+            
             if step % 100 == 0:
                 logging.info('***train results***')
                 if self.sqerror:
@@ -452,6 +452,7 @@ class NNModel_lang2loc():
                 else:
                     latlon_pred = self.predict(X_train)
                 geo_latlon_eval(U_train, userLocation, latlon_pred)
+            '''
             if l_val < best_val_loss:
                 best_val_loss = l_val
                 if self.sqerror:
@@ -469,9 +470,9 @@ class NNModel_lang2loc():
             lasagne.layers.set_all_param_values(self.l_out, best_params)
         else:
             lasagne.layers.set_all_param_values(self.l_out_gaus, best_params)
-        logging.info('dumping the model...')
-        with open(model_file, 'wb') as fout:
-            pickle.dump(best_params, fout)
+        #logging.info('dumping the model...')
+        #with open(model_file, 'wb') as fout:
+        #    pickle.dump(best_params, fout)
                 
     def predict(self, X):
         mus_eval, sigmas_eval, corxy_eval, pis_eval = self.f_predict(X)
@@ -598,23 +599,56 @@ def train(data, **kwargs):
     X_train, Y_train, X_dev, Y_dev, X_test, Y_test, U_train, U_dev, U_test, classLatMedian, classLonMedian, userLocation, loc_train = data
     input_size = X_train.shape[1]
     output_size = Y_train.shape[1] if len(Y_train.shape) == 2 else np.max(Y_train) + 1
-    batch_size = min(int(X_train.shape[0] / 10), 2000)
-    
+    batch_size = min(int(X_train.shape[0] / 10), 1000)
+    logging.info('batch size %d' % batch_size)
+    max_down = 20 if dataset_name == 'cmu' else 5 
     model = NNModel_lang2loc(n_epochs=10000, batch_size=batch_size, regul_coef=regul, 
                     input_size=input_size, output_size=output_size, hid_size=hid_size, 
-                    drop_out=True, dropout_coef=dropout_coef, early_stopping_max_down=20, 
+                    drop_out=True, dropout_coef=dropout_coef, early_stopping_max_down=max_down, 
                     input_sparse=True, reload=False, ncomp=ncomp, autoencoder=autoencoder, sqerror=sqerror)
 
     model.fit(X_train, Y_train, X_dev, Y_dev, X_test, Y_test, U_train, U_dev, U_test, userLocation)
+    #save some space before prediction
+    del X_train
+    del Y_train
     if model.sqerror:
         latlon_pred = model.predict_regression(X_dev)
     else:
-        latlon_pred = model.predict(X_dev)
-    geo_latlon_eval(U_dev, userLocation, latlon_pred)
-
+        latlon_preds = []
+    for batch in model.iterate_minibatches(X_dev, X_dev, model.batch_size, shuffle=False):
+        x_batch, x_batch = batch
+        latlon_pred = model.predict(x_batch)
+        latlon_preds.append(latlon_pred)
+    latlon_pred = np.vstack(tuple(latlon_preds))
+    mean , median, acc = geo_latlon_eval(U_dev, userLocation, latlon_pred)
+    return mean, median, acc
     #latlon_pred = model.predict(X_test)
     #geo_latlon_eval(U_test, userLocation, latlon_pred)
 
+def tune(data, dataset_name, args, num_iter=100):
+    logging.info('tuning over %s' %dataset_name)
+    param_scores = []
+    for i in xrange(num_iter):
+        logging.info('tuning iter %d' %i)
+        np.random.seed(77)
+        regul_coef = random.choice([0.0, 1e-7, 1e-6, 1e-5, 1e-4])
+        drop_out_ceof = random.choice([0.0, 0.2, 0.5, 0.7])
+        hidden_size = random.choice([100, 200, 400, 800, 1600])
+        ncomp = random.choice([50, 100, 200, 400, 800])
+        logging.info('regul %f drop %f hidden %d ncomp %d' %(regul_coef, drop_out_ceof, hidden_size, ncomp))
+        mean, median, acc = train(data, regul_coef=regul_coef, dropout_coef=drop_out_ceof, 
+              hidden_size=hidden_size, ncomp=ncomp, dataset_name=dataset_name, sqerror=args.sqerror)
+        scores = OrderedDict()
+        scores['mean'], scores['median'], scores['acc'] = mean, median, acc
+        params = OrderedDict()
+        params['regul'], params['dropout'], params['hidden'], params['ncomp'] = regul_coef, drop_out_ceof, hidden_size, ncomp
+        param_scores.append([params, scores])
+        logging.info(params)
+        logging.info(scores)
+    for param_score in param_scores:
+        logging.info(param_score)
+        
+    
 
 def parse_args(argv):
     """
@@ -635,14 +669,14 @@ def parse_args(argv):
     parser.add_argument('-drop','--dropout', metavar='float', help='dropout coef default 0.5', type=float, default=0.5)
     parser.add_argument('-cel','--celebrity', metavar='int', help='celebrity threshold', type=int, default=10)
     parser.add_argument('-conv', '--convolution', action='store_true', help='if true do convolution')
-    parser.add_argument('-map', '--map', action='store_true', help='if true just draw maps from pre-trained model')
-    parser.add_argument('-tune', '--tune', action='store_true', help='if true tune the hyper-parameters') 
+    parser.add_argument('-map', '--map', action='store_true', help='if true just draw maps from pre-trained model') 
     parser.add_argument('-sqerror', '--sqerror', action='store_true', help='if exists use squared error regression instead of gaussian mixture model') 
     parser.add_argument('-autoencoder', '--autoencoder', type=int, help='if not zero pre-trains the model with input lat/lon and output lat/lon for n steps', default=0) 
     parser.add_argument('-grid', '--grid', action='store_true', help='if exists transforms the input from lat/lon to distance from grids on map') 
     parser.add_argument('-rbf', '--rbf', action='store_true', help='if exists transforms the input from lat/lon to rbf probabilities and learns centers and sigmas as well.') 
     parser.add_argument('-ncomp', '--ncomp', type=int, help='the number of bivariate gaussians whose parameters are going to be learned.', default=100) 
     parser.add_argument('-toy', action='store_true', help='if exists use the toy dataset instead of geolocation datasets.')
+    parser.add_argument('-tune', action='store_true', help='if exists tune hyperparameters')
     parser.add_argument('-m', '--message', type=str) 
     
     args = parser.parse_args(argv)
@@ -654,11 +688,15 @@ if __name__ == '__main__':
     datadir = args.dir
     dataset_name = datadir.split('/')[-3]
     logging.info('dataset: %s' % dataset_name)
+    
     if args.toy:
         logging.info('toy dataset is being used.')
         data = load_toy_data()
     else:
         data = load_data(data_home=args.dir, encoding=args.encoding, mindf=args.mindf, grid=args.grid, dataset_name=dataset_name)
     
-    train(data, regul_coef=args.regularization, dropout_coef=args.dropout, 
-          hidden_size=args.hidden, autoencoder=args.autoencoder, grid=args.grid, rbf=args.rbf, ncomp=args.ncomp, dataset_name=dataset_name, sqerror=args.sqerror)
+    if args.tune:
+        tune(data, dataset_name, args)
+    else:
+        train(data, regul_coef=args.regularization, dropout_coef=args.dropout, 
+              hidden_size=args.hidden, autoencoder=args.autoencoder, grid=args.grid, rbf=args.rbf, ncomp=args.ncomp, dataset_name=dataset_name, sqerror=args.sqerror)

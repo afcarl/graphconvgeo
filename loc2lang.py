@@ -240,7 +240,7 @@ class NNModel():
                 self.set_params(params)
                 return
         logging.info('autoencoder training with %d n_epochs and  %d batch_size' %(self.autoencoder, self.batch_size))
-        best_l_autoencoder_val = 1000000
+        best_l_autoencoder_val = sys.maxint
         auto_down = 0
         for i in xrange(self.autoencoder):
             autoencoder_losses = []
@@ -449,7 +449,7 @@ def load_data(data_home, **kwargs):
         stop_words.extend(city_names)
     dl = DataLoader(data_home=data_home, bucket_size=bucket_size, encoding=encoding, 
                     celebrity_threshold=celebrity_threshold, one_hot_labels=one_hot_label, 
-                    mindf=mindf, maxdf=0.1, norm='l1', idf=True, btf=True, tokenizer=None, 
+                    mindf=mindf, maxdf=0.1, norm='l1', idf=False, btf=True, tokenizer=None, 
                     subtf=True, stops=stop_words, token_pattern=r'(?u)(?<![#@])\b\w+\b')
     logging.info('loading dataset...')
     dl.load_data()
@@ -475,6 +475,12 @@ def load_data(data_home, **kwargs):
     loc_dev = np.array([[a[0], a[1]] for a in dl.df_dev[['lat', 'lon']].values.tolist()], dtype='float32')
     
     dl.tfidf()
+    word_dialect = {}
+    with open('./data/geodare.cleansed.filtered.json', 'r') as fin:
+        for line in fin:
+            line = line.strip()
+            dialect_word = json.loads(line)
+            word_dialect[dialect_word['word']] = dialect_word['dialect']
     #words that should be used in the output and be predicted
 
     W_train = dl.X_train
@@ -522,11 +528,11 @@ def train(data, **kwargs):
     grid_transform = kwargs.get('grid', False)
     n_gaus_comp = kwargs.get('ncomp', 500)
     dataset_name = kwargs.get('dataset_name')
-    kmeans_mu = kwargs.get('kmeans', False)
+    kmeans_mu = kwargs.get('kmeans', True)
     loc_train, W_train, loc_dev, W_dev, loc_test, W_test, vocab = data
     input_size = loc_train.shape[1]
     output_size = W_train.shape[1]
-    batch_size = 100 if W_train.shape[0] < 10000 else 10000
+    batch_size = 100 if W_train.shape[0] < 10000 else 5000
 
     mus = None
     if kmeans_mu:
@@ -534,14 +540,18 @@ def train(data, **kwargs):
         mus = get_cluster_centers(loc_train, n_cluster=n_gaus_comp)
         logging.info('first mu is %s' %str(mus[0, :]))
     else:
+        logging.info('initializing mus by n random training samples...')
         #set all mus to center of US
         indices = np.arange(loc_train.shape[0])
         np.random.shuffle(indices)
         random_indices = indices[0:n_gaus_comp]
         mus = loc_train[random_indices, :]
-        for i in range(mus.shape[0]):
-            mus[i, 0] = 39.5 + np.random.uniform(low=-3, high=+3)
-            mus[i, 1] = -98.35 + np.random.uniform(low=-3, high=+3)
+        set_to_center = False
+        if set_to_center:
+            for i in range(mus.shape[0]):
+                logging.info('set all mus to the center of USA with a little noise')
+                mus[i, 0] = 39.5 + np.random.uniform(low=-3, high=+3)
+                mus[i, 1] = -98.35 + np.random.uniform(low=-3, high=+3)
         mus = mus.astype('float32')
     
     model = NNModel(n_epochs=1000, batch_size=batch_size, regul_coef=regul, 
@@ -631,7 +641,7 @@ def get_local_words(preds, vocab, NEs=[], k=50):
         filtered_local_words.append(word)
     return filtered_local_words[0:k]
    
-def contour_me(info_file='coords-preds-vocab1366766_1000.pkl', **kwargs):
+def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
     dataset_name = kwargs.get('dataset_name')
     lllat = 24.396308
     lllon = -124.848974
@@ -660,6 +670,15 @@ def contour_me(info_file='coords-preds-vocab1366766_1000.pkl', **kwargs):
     "The South":['banquette','billfold','chuck','commode','lagniappe','yankee','yonder'],
     "The West":['davenport','Hella','snowmachine' ]
     }
+    
+    word_dialect = {}
+    with open('./data/geodare.cleansed.filtered.json', 'r') as fin:
+        for line in fin:
+            line = line.strip()
+            dialect_word = json.loads(line)
+            word_dialect[dialect_word['word']] = dialect_word['dialect']
+    
+            
     map_dir = './maps/' + info_file.split('.')[0] + '/'
     if os.path.exists(map_dir):
         shutil.rmtree(map_dir)
@@ -667,7 +686,7 @@ def contour_me(info_file='coords-preds-vocab1366766_1000.pkl', **kwargs):
     
     
     topk_words = []    
-    
+    topk_words.extend(word_dialect.keys())
     dialect_words = ['jawn', 'paczki', 'euchre', 'brat', 'toboggan', 'brook', 'grinder', 'yall', 'yinz', 'youze', 'hella', 'yeen']
     topk_words.extend(dialect_words)
     custom_words = ['springfield', 'columbia', 'nigga', 'niqqa', 'bamma', 'cooter', 'britches', 'yapper', 'younguns', 'hotdish', 
@@ -678,7 +697,8 @@ def contour_me(info_file='coords-preds-vocab1366766_1000.pkl', **kwargs):
     with open(info_file, 'rb') as fin:
         coords, preds, vocab = pickle.load(fin)
     vocabset = set(vocab)
-    
+    dare_in_vocab = set(word_dialect.keys()) & vocabset
+    logging.info('%d DARE words, %d in vocab' %(len(word_dialect), len(dare_in_vocab)))
     add_local_words = True
     if add_local_words:
         ne_file = './data/ne_' + dataset_name + '.json'
@@ -923,7 +943,7 @@ def visualise_bigaus(params_file, params=None, iter=None, output_type='png', **k
         sigmay=np.log(1 + np.exp(sigmas[k][0]))
         mux=mlon[k]
         muy=mlat[k]
-        corxy = covxys[k] / (sigmax * sigmay)
+        corxy = covxys[k]
         #apply the soft sign
         corxy = corxy / (1 + np.abs(corxy))
         #now given corxy find sigmaxy
@@ -935,12 +955,16 @@ def visualise_bigaus(params_file, params=None, iter=None, output_type='png', **k
         #Z = maskoceans(X, Y, Z)
         
 
-        con = m.contour(X, Y, Z, linewidths=0.4, colors='red', antialiased=True)
+        con = m.contour(X, Y, Z, levels=[0.01], linewidths=0.4, colors='red', antialiased=True)
+        '''
         num_levels = len(con.collections)
         if num_levels > 1:
             for i in range(0, num_levels):
                 if i != (num_levels-1):
                     con.collections[i].set_visible(False)
+        '''
+        plt.clabel(con, [con.levels[-1]], inline=True, fontsize=10)
+        
     '''
     world_shp_info = m.readshapefile('./data/CNTR_2014_10M_SH/Data/CNTR_RG_10M_2014','world',drawbounds=False, zorder=100)
     for shapedict,state in zip(m.world_info, m.world):

@@ -155,7 +155,7 @@ class DiagonalBivariateGaussianLayer(Layer):
 
 class BivariateGaussianLayer(Layer):
 
-    def __init__(self, incoming, num_units, mus=None, **kwargs):
+    def __init__(self, incoming, num_units, mus=None, sigmas=None, corxy=None, **kwargs):
         super(BivariateGaussianLayer, self).__init__(incoming, **kwargs)
         #self.H = H
         #self.H = self.add_param(H, (H.shape[0], H.shape[1]), name='H')
@@ -166,8 +166,15 @@ class BivariateGaussianLayer(Layer):
         else:
             mus_init = np.random.randn(self.num_units, 2).astype('float32')
         
-        sigmas_init = np.array([10, 10]).astype('float32') * np.abs(np.random.randn(self.num_units, 2).reshape((self.num_units,2))).astype('float32')
-        corxy_init = np.random.randn(self.num_units,).reshape((self.num_units,)).astype('float32')
+        if sigmas is not None:
+            sigmas_init = sigmas
+        else:
+            sigmas_init = np.random.uniform(low=1, high=10, size=(self.num_units, 2).reshape((self.num_units,2))).astype('float32')
+        
+        if corxy is not None:
+            corxy_init = corxy
+        else:
+            corxy_init = np.random.uniform(low=-10, high=10, size=self.num_units).reshape((self.num_units,)).astype('float32')
         
         self.mus = self.add_param(mus_init, mus_init.shape, name='mus')
         self.sigmas = self.add_param(sigmas_init, sigmas_init.shape, name='sigmas')
@@ -189,7 +196,7 @@ class BivariateGaussianLayer(Layer):
         diff = X-mus
         #multiply x-mu1 , x-mu2 the result should be number_of_samples x number_of_hidden
         diffprod = T.prod(diff, axis=-1)
-        #correlation x, y member of (-1, 1) 
+        #correlation x, y member of (-1, 1)  softsign(x) = x / (1 + abs(x))
         corxy = T.nnet.nnet.softsign(self.corxy)
         #power 2 of corxy
         corxy2 = corxy **2
@@ -205,4 +212,44 @@ class BivariateGaussianLayer(Layer):
 
         return probs
 
+class MDNSharedParams(DenseLayer):
+
+    def __init__(self, incoming, mus=None, sigmas=None, corxy=None, **kwargs):
+        super(MDNSharedParams, self).__init__(incoming, **kwargs)
+        #self.H = H
+        #self.H = self.add_param(H, (H.shape[0], H.shape[1]), name='H')
+        self.name = 'MDNSharedParams'
+
+        if mus is not None:
+            mus_init = mus
+        else:
+            mus_init = np.random.randn(self.num_units, 2).astype('float32')
+        
+        if sigmas is not None:
+            sigmas_init = sigmas
+        else:
+            sigmas_init = np.random.uniform(low=1, high=10, size=(self.num_units, 2)).reshape((self.num_units,2)).astype('float32')
+        
+        if corxy is not None:
+            corxy_init = corxy
+        else:
+            corxy_init = np.random.uniform(low=-10, high=10, size=self.num_units).reshape((self.num_units,)).astype('float32')
+        
+        self.mus = self.add_param(mus_init, mus_init.shape, name='mus')
+        self.sigmas = self.add_param(sigmas_init, sigmas_init.shape, name='sigmas')
+        self.corxy = self.add_param(corxy_init, corxy_init.shape, name='corxy')
+
+    def get_output_shape_for(self, input_shape):
+        return (input_shape[0], self.num_units)        
+    
+    def get_output_for(self, input, **kwargs):
+        if input.ndim > 2:
+            # if the input has more than two dimensions, flatten it into a
+            # batch of feature vectors.
+            input = input.flatten(2)
+
+        activation = T.dot(input, self.W)
+        if self.b is not None:
+            activation = activation + self.b.dimshuffle('x', 0)
+        return self.nonlinearity(activation)
     

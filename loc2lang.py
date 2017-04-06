@@ -48,7 +48,6 @@ from sklearn.preprocessing import normalize
 from haversine import haversine
 from _collections import defaultdict
 from scipy import stats
-from twokenize import tokenize
 from mpl_toolkits.basemap import Basemap, cm, maskoceans
 from scipy.interpolate import griddata as gd
 from lasagne_layers import SparseInputDenseLayer, GaussianRBFLayer, DiagonalBivariateGaussianLayer, BivariateGaussianLayer
@@ -106,7 +105,10 @@ def inspect_outputs(i, node, fn):
     print(" output(s) shape(s):", [output[0].shape for output in fn.outputs])
     #print(" output(s) stride(s):", [output.strides for output in fn.outputs])    
 
-
+def softplus(x):
+    return np.log(np.exp(x) + 1)
+def softsign(x):
+    return x / (1 + np.abs(x))
 
 class NNModel():
     def __init__(self, 
@@ -123,7 +125,9 @@ class NNModel():
                  autoencoder=100,
                  reload=False,
                  n_gaus_comp=500,
-                 mus=None):
+                 mus=None,
+                 sigmas=None,
+                 corxy=None):
         self.n_epochs = n_epochs
         self.batch_size = batch_size
         self.regul_coef = regul_coef
@@ -137,6 +141,8 @@ class NNModel():
         self.reload = reload
         self.n_gaus_comp = n_gaus_comp
         self.mus = mus
+        self.sigmas = sigmas
+        self.corxy = corxy
         logging.info('building nn model with %d gaussian components and %d hidden layer...' % (self.n_gaus_comp, self.hid_size))
         self.build()
         
@@ -151,13 +157,13 @@ class NNModel():
 
 
         logging.info('adding %d-comp bivariate gaussian layer...' %self.n_gaus_comp)
-        l_gaus = BivariateGaussianLayer(l_in, num_units=self.n_gaus_comp, mus=self.mus)
+        l_gaus = BivariateGaussianLayer(l_in, num_units=self.n_gaus_comp, mus=self.mus, sigmas=self.sigmas, corxy=self.corxy)
 
         self.gaus_output = lasagne.layers.get_output(l_gaus, self.X_sym)
-
-        self.l_out_autoencoder = lasagne.layers.DenseLayer(l_gaus, num_units=self.input_size, 
-                                                           nonlinearity=lasagne.nonlinearities.linear,
-                                                           W=lasagne.init.GlorotUniform())
+        if self.autoencoder:
+            self.l_out_autoencoder = lasagne.layers.DenseLayer(l_gaus, num_units=self.input_size, 
+                                                               nonlinearity=lasagne.nonlinearities.linear,
+                                                               W=lasagne.init.GlorotUniform())
         if self.hid_size:
             l_hid = lasagne.layers.DenseLayer(l_gaus, num_units=self.hid_size, 
                                               nonlinearity=lasagne.nonlinearities.tanh,
@@ -179,13 +185,13 @@ class NNModel():
 
 
         
-
-        self.autoencoder_eval_output = lasagne.layers.get_output(self.l_out_autoencoder, self.X_sym, deterministic=True)
-        self.autoencoder_output = lasagne.layers.get_output(self.l_out_autoencoder, self.X_sym)
-        autoencoder_loss = lasagne.objectives.squared_error(self.Y_sym, self.autoencoder_output)
-        autoencoder_loss = autoencoder_loss.mean() 
-        autoencoder_loss_eval = lasagne.objectives.squared_error(self.Y_sym, self.autoencoder_eval_output)
-        autoencoder_loss_eval = autoencoder_loss_eval.mean()
+        if self.autoencoder:
+            self.autoencoder_eval_output = lasagne.layers.get_output(self.l_out_autoencoder, self.X_sym, deterministic=True)
+            self.autoencoder_output = lasagne.layers.get_output(self.l_out_autoencoder, self.X_sym)
+            autoencoder_loss = lasagne.objectives.squared_error(self.Y_sym, self.autoencoder_output)
+            autoencoder_loss = autoencoder_loss.mean() 
+            autoencoder_loss_eval = lasagne.objectives.squared_error(self.Y_sym, self.autoencoder_eval_output)
+            autoencoder_loss_eval = autoencoder_loss_eval.mean()
 
  
         if self.regul_coef:
@@ -195,11 +201,9 @@ class NNModel():
             logging.info('regul coefficient for output and hidden lasagne_layers is ' + str(self.regul_coef))
             l1_penalty = lasagne.regularization.regularize_layer_params(self.l_out, l1) * regul_coef_out * l1_share_out
             l2_penalty = lasagne.regularization.regularize_layer_params(self.l_out, l2) * regul_coef_out * (1-l1_share_out)
-            if not self.rbf and not self.bigaus:
-                l1_penalty += lasagne.regularization.regularize_layer_params(l_hid, l1) * regul_coef_hid * l1_share_hid
-                l2_penalty += lasagne.regularization.regularize_layer_params(l_hid, l2) * regul_coef_hid * (1-l1_share_hid)
+            l1_penalty += lasagne.regularization.regularize_layer_params(l_hid, l1) * regul_coef_hid * l1_share_hid
+            l2_penalty += lasagne.regularization.regularize_layer_params(l_hid, l2) * regul_coef_hid * (1-l1_share_hid)
             loss = loss + l1_penalty + l2_penalty
-            eval_loss = eval_loss + l1_penalty + l2_penalty
         
         
         parameters = lasagne.layers.get_all_params(self.l_out, trainable=True)
@@ -208,12 +212,12 @@ class NNModel():
         self.f_train = theano.function([self.X_sym, self.Y_sym], loss, updates=updates, on_unused_input='warn')
         self.f_val = theano.function([self.X_sym, self.Y_sym], eval_loss, on_unused_input='warn')
         self.f_predict_proba = theano.function([self.X_sym], self.eval_output, on_unused_input='warn') 
-
-        autoencoder_parameters = lasagne.layers.get_all_params(self.l_out_autoencoder, trainable=True)
-        autoencoder_updates = lasagne.updates.adamax(autoencoder_loss, autoencoder_parameters, learning_rate=2e-3, beta1=0.9, beta2=0.999, epsilon=1e-8)
-        self.f_train_autoencoder = theano.function([self.X_sym, self.Y_sym], autoencoder_loss, updates=autoencoder_updates, on_unused_input='warn')#,  mode=theano.compile.MonitorMode(pre_func=inspect_inputs, post_func=inspect_outputs))
-        self.f_val_autoencoder = theano.function([self.X_sym, self.Y_sym], autoencoder_loss, on_unused_input='warn')
-        self.f_predict_autoencoder = theano.function([self.X_sym], self.autoencoder_eval_output, on_unused_input='warn')        
+        if self.autoencoder:
+            autoencoder_parameters = lasagne.layers.get_all_params(self.l_out_autoencoder, trainable=True)
+            autoencoder_updates = lasagne.updates.adamax(autoencoder_loss, autoencoder_parameters, learning_rate=2e-3, beta1=0.9, beta2=0.999, epsilon=1e-8)
+            self.f_train_autoencoder = theano.function([self.X_sym, self.Y_sym], autoencoder_loss, updates=autoencoder_updates, on_unused_input='warn')#,  mode=theano.compile.MonitorMode(pre_func=inspect_inputs, post_func=inspect_outputs))
+            self.f_val_autoencoder = theano.function([self.X_sym, self.Y_sym], autoencoder_loss, on_unused_input='warn')
+            self.f_predict_autoencoder = theano.function([self.X_sym], self.autoencoder_eval_output, on_unused_input='warn')        
 
     def set_params(self, params):
         lasagne.layers.set_all_param_values(self.l_out, params)
@@ -284,8 +288,8 @@ class NNModel():
             if l_val < best_val_loss: #and (best_val_loss - l_val) > (0.0001 * l_val):
                 best_params = lasagne.layers.get_all_param_values(self.l_out)
                 best_val_loss = l_val
-                logging.info('first mu (%f,%f) first covar (%f, %f, %f)' %(best_params[0][0, 0], best_params[0][0, 1], best_params[1][0, 0], best_params[1][0, 1], best_params[2][0]))
-                logging.info('second mu (%f,%f) second covar (%f, %f, %f)' %(best_params[0][1, 0], best_params[0][1, 1], best_params[1][1, 0], best_params[1][1, 1], best_params[2][1]))
+                logging.info('first mu (%f,%f) first covar (%f, %f, %f)' %(best_params[0][0, 0], best_params[0][0, 1], softplus(best_params[1][0, 0]), softplus(best_params[1][0, 1]), softsign(best_params[2][0])))
+                logging.info('second mu (%f,%f) second covar (%f, %f, %f)' %(best_params[0][1, 0], best_params[0][1, 1], softplus(best_params[1][1, 0]), softplus(best_params[1][1, 1]), softsign(best_params[2][1])))
                 n_validation_down = 0
             else:
                 n_validation_down += 1
@@ -399,11 +403,52 @@ def norm_words(input):
     normalize(input, norm='l1', axis=1, copy=False)
     return input
 
-def get_cluster_centers(input, n_cluster):
-    #kmns = KMeans(n_clusters=n_cluster, n_jobs=10)
+def get_cluster_centers(input, n_cluster, raw=True):
+    '''
+    given lat/lons of training samples cluster them
+    and find the clusters' mus, sigmas and corxys.
+    
+    if raw is True then run inverse softplus and softsign on sigmas and corxys
+    so that when softplus and softsign is performed on them in the neural network
+    the actual sigmas and corxys are recovered.
+    '''
     kmns = MiniBatchKMeans(n_clusters=n_cluster, batch_size=1000)
     kmns.fit(input)
-    return kmns.cluster_centers_.astype('float32')
+    sigmas = np.zeros(shape=(n_cluster, 2), dtype='float32')
+    corxys = np.zeros(n_cluster, dtype='float32')
+    for i in range(n_cluster):
+        indices = np.where(kmns.labels_ == i)[0]
+        samples = input[indices]
+        #rowvar should be False so that each column is considered a variable (not each row)
+        covmat = np.cov(samples, rowvar=False)
+        if samples.shape[0] == 1:
+            #only one sample in the cluster
+            stdlatlat = 1
+            stdlonlon = 1
+            covlatlon = 0
+        else: 
+            stdlatlat = np.sqrt(covmat[0, 0])
+            stdlonlon = np.sqrt(covmat[1, 1])
+            covlatlon = covmat[0, 1]
+        if raw:
+            #softplus will be applied on sigmas so now apply the reverse so that they become sigmas in neural network
+            sigmas[i, 0] = np.log(np.exp(stdlatlat) - 1)
+            sigmas[i, 1] = np.log(np.exp(stdlonlon) - 1)
+    
+    
+            corlatlon = covlatlon / (stdlatlat * stdlonlon)
+            #do inverse softsign on corlatlon because we later run softsign on corlatlon values in the neural network: softsign = x / (1 + abs(x))
+            #later when softsign is applied on unprocessed_cor, corlatlon will be retrieved
+            softsigncor = corlatlon/ (1 + np.abs(corlatlon))
+            raw_cor = corlatlon / (1.0 - corlatlon * np.sign(softsigncor))
+            corxys[i] = raw_cor
+        else:
+            corxys[i] = corlatlon
+            sigmas[i, 0] = stdlatlat
+            sigmas[i, 1] = stdlonlon
+        
+    mus = kmns.cluster_centers_.astype('float32')
+    return mus, sigmas, corxys 
     
 def get_named_entities(documents, mincount=10):
     '''
@@ -449,8 +494,8 @@ def load_data(data_home, **kwargs):
         stop_words.extend(city_names)
     dl = DataLoader(data_home=data_home, bucket_size=bucket_size, encoding=encoding, 
                     celebrity_threshold=celebrity_threshold, one_hot_labels=one_hot_label, 
-                    mindf=mindf, maxdf=0.1, norm='l1', idf=False, btf=True, tokenizer=None, 
-                    subtf=True, stops=stop_words, token_pattern=r'(?u)(?<![#@])\b\w+\b')
+                    mindf=mindf, maxdf=0.1, norm='l1', idf=True, btf=True, tokenizer=None, 
+                    subtf=True, stops=stop_words, token_pattern=r'(?u)(?<![@])\b\w\w+\b')
     logging.info('loading dataset...')
     dl.load_data()
 
@@ -481,12 +526,32 @@ def load_data(data_home, **kwargs):
             line = line.strip()
             dialect_word = json.loads(line)
             word_dialect[dialect_word['word']] = dialect_word['dialect']
-    #words that should be used in the output and be predicted
 
+    extract_vocab = False
+    if extract_vocab:
+        #words that should be used in the output and be predicted
+        w_freq = np.array(dl.X_train.sum(axis=0))[0]
+        vocab = dl.vectorizer.get_feature_names()
+        vocab_freq = {vocab[i]: w_freq[i] for i in xrange(len(vocab))}
+        frequent_dare_words = set()
+        frequent_vocab_words = set([vocab[i] for i in xrange(len(vocab)) if w_freq[i] >= 100])
+        for w in word_dialect:
+            freq = vocab_freq.get(w, 0)
+            if freq > 10:
+                frequent_dare_words.add(w)
+        logging.info('found %d frequent dare words' %len(frequent_dare_words))
+        for dare_w in frequent_dare_words:
+            frequent_vocab_words.add(dare_w)
+        new_vocab = sorted(frequent_vocab_words)
+        with open('./data/na_vocab.pkl', 'wb') as fin:
+            pickle.dump(new_vocab, fin)
+
+    
+            
     W_train = dl.X_train
     W_dev = dl.X_dev.todense().astype('float32')
     W_test = dl.X_test.todense().astype('float32')
-
+    
     if normalize_words:
         W_train = norm_words(W_train)
         W_dev = norm_words(W_dev)
@@ -536,8 +601,8 @@ def train(data, **kwargs):
 
     mus = None
     if kmeans_mu:
-        logging.info('initializing mus by clustering training points')
-        mus = get_cluster_centers(loc_train, n_cluster=n_gaus_comp)
+        logging.info('initializing mus, sigmas and corxy by clustering training points')
+        mus, raw_stds, raw_cors = get_cluster_centers(loc_train, n_cluster=n_gaus_comp)
         logging.info('first mu is %s' %str(mus[0, :]))
     else:
         logging.info('initializing mus by n random training samples...')
@@ -553,18 +618,20 @@ def train(data, **kwargs):
                 mus[i, 0] = 39.5 + np.random.uniform(low=-3, high=+3)
                 mus[i, 1] = -98.35 + np.random.uniform(low=-3, high=+3)
         mus = mus.astype('float32')
+        raw_stds = None
+        raw_cors = None
     
     model = NNModel(n_epochs=1000, batch_size=batch_size, regul_coef=regul, 
                     input_size=input_size, output_size=output_size, hid_size=hid_size, 
                     drop_out=True, dropout_coef=dropout_coef, early_stopping_max_down=10, 
-                    autoencoder=autoencoder, reload=False, n_gaus_comp=n_gaus_comp, mus=mus)
+                    autoencoder=autoencoder, reload=False, n_gaus_comp=n_gaus_comp, mus=mus, sigmas=raw_stds, corxy=raw_cors)
     #pdb.set_trace()
     model.fit(loc_train, W_train, loc_dev, W_dev, loc_test, W_test)
     #model.fit(loc_train, loc_train, loc_dev, loc_dev, loc_test, loc_test)
-    
-    pred_test_autoencoder = model.predict_autoencoder(loc_test)
-    logging.info('test autoencoder error')
-    geo_latlon_eval(loc_test, pred_test_autoencoder)
+    if autoencoder:
+        pred_test_autoencoder = model.predict_autoencoder(loc_test)
+        logging.info('test autoencoder error')
+        geo_latlon_eval(loc_test, pred_test_autoencoder)
 
     k = 50
     with open('./data/cities.json', 'r') as fin:
@@ -707,7 +774,7 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
         NEs = NEs['nes']
         local_words = get_local_words(preds, vocab, NEs=NEs, k=500)
         logging.info(local_words)
-        topk_words.extend(local_words[0:100])
+        topk_words.extend(local_words[0:20])
     
     add_cities = False
     if add_cities:
@@ -850,7 +917,7 @@ def visualise_bigaus(params_file, params=None, iter=None, output_type='png', **k
         with open(params_file, 'rb') as fin:
             params = pickle.load(fin)
             
-    mus, sigmas, covxys = params[0], params[1], params[2] 
+    mus, sigmas, corxys = params[0], params[1], params[2] 
 
     dataset_name = kwargs.get('dataset_name')
     lllat = 24.396308
@@ -943,7 +1010,7 @@ def visualise_bigaus(params_file, params=None, iter=None, output_type='png', **k
         sigmay=np.log(1 + np.exp(sigmas[k][0]))
         mux=mlon[k]
         muy=mlat[k]
-        corxy = covxys[k]
+        corxy = corxys[k]
         #apply the soft sign
         corxy = corxy / (1 + np.abs(corxy))
         #now given corxy find sigmaxy
@@ -955,7 +1022,7 @@ def visualise_bigaus(params_file, params=None, iter=None, output_type='png', **k
         #Z = maskoceans(X, Y, Z)
         
 
-        con = m.contour(X, Y, Z, levels=[0.01], linewidths=0.4, colors='red', antialiased=True)
+        con = m.contour(X, Y, Z, levels=[0.01], linewidths=1.0, colors='darkorange', antialiased=True)
         '''
         num_levels = len(con.collections)
         if num_levels > 1:
@@ -963,7 +1030,9 @@ def visualise_bigaus(params_file, params=None, iter=None, output_type='png', **k
                 if i != (num_levels-1):
                     con.collections[i].set_visible(False)
         '''
-        plt.clabel(con, [con.levels[-1]], inline=True, fontsize=10)
+        contour_labels = False
+        if contour_labels:
+            plt.clabel(con, [con.levels[-1]], inline=True, fontsize=10)
         
     '''
     world_shp_info = m.readshapefile('./data/CNTR_2014_10M_SH/Data/CNTR_RG_10M_2014','world',drawbounds=False, zorder=100)
@@ -1011,7 +1080,7 @@ def parse_args(argv):
     args = parser.parse_args(argv)
     return args
 if __name__ == '__main__':
-    #nice -n 10 python loc2lang.py -d ~/datasets/na/processed_data/ -enc utf-8 -reg 0 -drop 0.0 -mindf 200 -hid 1000 -bigaus -autoencoder 100 -map
+    #nice -n 10 python loc2lang.py -d ~/datasets/na/processed_data/ -enc utf-8 -reg 0 -drop 0.0 -mindf 200 -hid 1000 -ncomp 100 -autoencoder 100 -map
     args = parse_args(sys.argv[1:])
     datadir = args.dir
     dataset_name = datadir.split('/')[-3]

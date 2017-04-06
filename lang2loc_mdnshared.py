@@ -58,6 +58,19 @@ logging.basicConfig(format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S
 np.random.seed(77)
 random.seed(77)
 
+def softplus(x):
+    return np.log(np.exp(x) + 1)
+def softsign(x):
+    return x / (1 + np.abs(x))
+
+def inspect_inputs(i, node, fn):
+    print(i, node, "input(s) shape(s):", [input[0].shape for input in fn.inputs])
+    #print(i, node, "input(s) stride(s):", [input.strides for input in fn.inputs], end='')
+
+def inspect_outputs(i, node, fn):
+    print(" output(s) shape(s):", [output[0].shape for output in fn.outputs])
+    #print(" output(s) stride(s):", [output.strides for output in fn.outputs])  
+
 def geo_eval(y_true, y_pred, U_eval, classLatMedian, classLonMedian, userLocation):
     assert len(y_pred) == len(U_eval), "#preds: %d, #users: %d" %(len(y_pred), len(U_eval))
     distances = []
@@ -91,7 +104,81 @@ def geo_latlon_eval(U_eval, userLocation, latlon_pred):
     #logging.info("Mean %f Median %f acc@161 %f" %(np.mean(distances), np.median(distances), acc_at_161))
     return np.mean(distances), np.median(distances), acc_at_161
 
-class NNModel_lang2loc():
+def get_cluster_centers(input, n_cluster, raw=True):
+    '''
+    given lat/lons of training samples cluster them
+    and find the clusters' mus, sigmas and corxys.
+    
+    if raw is True then run inverse softplus and softsign on sigmas and corxys
+    so that when softplus and softsign is performed on them in the neural network
+    the actual sigmas and corxys are recovered.
+    '''
+    kmns = MiniBatchKMeans(n_clusters=n_cluster, batch_size=1000)
+    kmns.fit(input)
+    sigmas = np.zeros(shape=(n_cluster, 2), dtype='float32')
+    corxys = np.zeros(n_cluster, dtype='float32')
+    for i in range(n_cluster):
+        indices = np.where(kmns.labels_ == i)[0]
+        samples = input[indices]
+        #rowvar should be False so that each column is considered a variable (not each row)
+        covmat = np.cov(samples, rowvar=False)
+        if samples.shape[0] == 1:
+            #only one sample in the cluster
+            stdlatlat = 1
+            stdlonlon = 1
+            covlatlon = 0
+        else: 
+            stdlatlat = np.sqrt(covmat[0, 0])
+            stdlonlon = np.sqrt(covmat[1, 1])
+            covlatlon = covmat[0, 1]
+            if np.isnan(stdlatlat) or np.isnan(stdlonlon) or np.isnan(covlatlon):
+                stdlatlat = 1
+                stdlonlon = 1
+                covlatlon = 0
+            corlatlon = covlatlon / (stdlatlat * stdlonlon)
+        
+        increase_sigmas = False
+        if increase_sigmas:
+            stdlatlat *= 10
+            stdlonlon *=10
+            corlatlon /= 100.0
+           
+        if raw:
+            #softplus will be applied on sigmas so now apply the reverse so that they become sigmas in neural network
+            sigmas[i, 0] = np.log(np.exp(stdlatlat) - 1)
+            sigmas[i, 1] = np.log(np.exp(stdlonlon) - 1)
+    
+    
+            
+            #do inverse softsign on corlatlon because we later run softsign on corlatlon values in the neural network: softsign = x / (1 + abs(x))
+            #later when softsign is applied on unprocessed_cor, corlatlon will be retrieved
+            softsigncor = corlatlon/ (1 + np.abs(corlatlon))
+            raw_cor = corlatlon / (1.0 - corlatlon * np.sign(softsigncor))
+            corxys[i] = raw_cor
+        else:
+            corxys[i] = corlatlon
+            sigmas[i, 0] = stdlatlat
+            sigmas[i, 1] = stdlonlon
+
+    mus = kmns.cluster_centers_.astype('float32')
+
+    return mus, sigmas, corxys 
+
+def detect_nan(i, node, fn):
+    for output in fn.outputs:
+        if not isinstance(output[0], np.random.RandomState):
+            if sp.sparse.issparse(output[0]):
+                nans = np.isnan(output[0].data).any()
+            else:
+                nans = np.isnan(output[0]).any()
+            if nans:
+                print('*** NaN detected ***')
+                theano.printing.debugprint(node)
+                print('Inputs : %s' % [input[0] for input in fn.inputs])
+                print('Outputs: %s' % [output[0] for output in fn.outputs])
+                break
+
+class NNModel_lang2loc2():
     def __init__(self, 
                  n_epochs=10, 
                  batch_size=1000, 
@@ -107,7 +194,10 @@ class NNModel_lang2loc():
                  input_sparse=False,
                  reload=False,
                  ncomp=100,
-                 sqerror=False):
+                 sqerror=False,
+                 mus=None,
+                 sigmas=None,
+                 corxy=None):
         self.n_epochs = n_epochs
         self.batch_size = batch_size
         self.regul_coef = regul_coef
@@ -123,6 +213,10 @@ class NNModel_lang2loc():
         self.reload = reload
         self.n_bigaus_comp = ncomp
         self.sqerror = sqerror
+        self.mus = mus
+        self.sigmas = sigmas
+        self.corxy = corxy
+        self.nan = False
         logging.info('building nn model with %d hidden size, %d bivariate gaussian components and %d output size' % (self.hid_size, self.n_bigaus_comp, self.output_size) )
         if self.sqerror:
             self.build_squarederror_regression()
@@ -186,7 +280,30 @@ class NNModel_lang2loc():
         loss = -T.mean(log_gauss)
         
         return loss
-    
+
+    def nll_loss_sharedparams(self, mus, sigmas, corxy, pis, y_true):
+        mus_ex = mus[np.newaxis, :, :]
+        X = y_true[:, np.newaxis, :]
+        diff = X - mus_ex
+        diffprod = T.prod(diff, axis=-1)
+        corxy2 = corxy **2
+        diff2 = diff ** 2
+        sigmas2 = sigmas ** 2
+        sigmainvs = 1.0 / sigmas
+        sigmainvprods = sigmainvs[:, 0] * sigmainvs[:, 1]
+        diffsigma = diff2 / sigmas2
+        diffsigmanorm = T.sum(diffsigma, axis=-1)
+        z = diffsigmanorm - 2 * corxy * diffprod * sigmainvprods
+        oneminuscorxy2inv = 1.0 / (1.0 - corxy2)
+        expterm = -0.5 * z * oneminuscorxy2inv
+        new_exponent = T.log(0.5/np.pi) + T.log(sigmainvprods) + T.log(np.sqrt(oneminuscorxy2inv)) + expterm + T.log(pis)
+        max_exponent = T.max(new_exponent ,axis=1, keepdims=True)
+        mod_exponent = new_exponent - max_exponent
+        gauss_mix = T.sum(T.exp(mod_exponent),axis=1)
+        log_gauss = max_exponent + T.log(gauss_mix)
+        loss = -T.mean(log_gauss)
+        return loss
+
     def pred(self, mus, sigmas, corxy, pis, prediction_method='mixture'):
         '''
         select mus that maximize \sum_{pi_i * prob_i(mu)} if mean_prediction is True
@@ -236,7 +353,56 @@ class NNModel_lang2loc():
             return selected_mus
         elif prediction_method == 'mixture':
             logging.info('not implemented!')
- 
+    
+    def pred_sharedparams(self, mus, sigmas, corxy, pis, prediction_method='mixture'):
+        '''
+        select mus that maximize \sum_{pi_i * prob_i(mu)} if prediction_method is mixture
+        else
+        select the component with highest pi if prediction_method is pi.
+        '''
+        #logging.info('mus')
+        #logging.info(mus)
+        #logging.info('sigmas')
+        #logging.info(sigmas)
+        #logging.info('corxy')
+        #logging.info(corxy)
+        #logging.info('pis')
+        #logging.info(pis)
+        if prediction_method == 'mixture':
+            X = mus[:, np.newaxis, :]
+            diff = X - mus
+            diffprod = np.prod(diff, axis=-1)
+            sigmainvs = 1.0 / sigmas
+            sigmainvprods = sigmainvs[:, 0] * sigmainvs[:, 1]
+            sigmas2 = sigmas ** 2
+            corxy2 = corxy **2
+            diff2 = diff ** 2
+            diffsigma = diff2 / sigmas2
+            diffsigmanorm = np.sum(diffsigma, axis=-1)
+            z = diffsigmanorm - 2 * corxy * diffprod * sigmainvprods
+            oneminuscorxy2inv = 1.0 / (1.0 - corxy2)
+            term = -0.5 * z * oneminuscorxy2inv
+            expterm = np.exp(term)
+            probs = (0.5 / np.pi) * sigmainvprods * np.sqrt(oneminuscorxy2inv) * expterm
+            piprobs = pis[:, np.newaxis, :] * probs
+            piprobsum = np.sum(piprobs, axis=-1)
+            preds = np.argmax(piprobsum, axis=1)
+            selected_mus = mus[preds, :]
+     
+            return selected_mus
+        elif prediction_method == 'pi':
+            #logging.info(sigmas[0])
+            #logging.info(pis[0])
+            #logging.info(corxy[0])
+            
+            logging.info('only pis are used for prediction')
+            preds = np.argmax(pis, axis=1)
+            selected_mus = mus[preds, :]
+            #selected_sigmas = sigmas[np.arange(sigmas.shape[0]), :, preds]
+            #selected_corxy = corxy[np.arange(corxy.shape[0]),preds]
+            #selected_pis = pis[np.arange(pis.shape[0]),preds]        
+            return selected_mus
+
   
             
     def get_symb_mus(self, mus, sigmas, corxy, pis):
@@ -283,15 +449,20 @@ class NNModel_lang2loc():
 
 
 
-        self.l_out_gaus = lasagne.layers.DenseLayer(l_hid_text, num_units=self.n_bigaus_comp * 6,
-                                          nonlinearity=lasagne.nonlinearities.linear,
-                                          W=lasagne.init.GlorotUniform())
+        self.l_pi_out = lasagne_layers.MDNSharedParams(l_hid_text, num_units=self.n_bigaus_comp, 
+                                                       mus=self.mus, sigmas=self.sigmas, corxy=self.corxy,
+                                                       nonlinearity=lasagne.nonlinearities.softmax,
+                                                       W=lasagne.init.GlorotUniform())
+        
             
             
         #sq_error_coef = 0.01
-        output = lasagne.layers.get_output(self.l_out_gaus, self.X_sym)
-        mus, sigmas, corxy, pis = self.unpack_params(output, n_comp=self.n_bigaus_comp)
-        loss = self.nll_loss(mus, sigmas, corxy, pis, self.Y_sym)
+        pis = lasagne.layers.get_output(self.l_pi_out, self.X_sym)
+        mus, sigmas, corxy = self.l_pi_out.mus, self.l_pi_out.sigmas, self.l_pi_out.corxy
+        sigmas = T.nnet.softplus(sigmas)
+        corxy = T.nnet.nnet.softsign(corxy)
+        
+        loss = self.nll_loss_sharedparams(mus, sigmas, corxy, pis, self.Y_sym)
         #predicted_mu = self.get_symb_mus(mus, sigmas, corxy, pis)
         #loss += lasagne.objectives.squared_error(predicted_mu, self.Y_sym).mean() * sq_error_coef
         
@@ -304,8 +475,8 @@ class NNModel_lang2loc():
             l1_share_hid = 0.5
             regul_coef_out, regul_coef_hid = self.regul_coef, self.regul_coef
             logging.info('regul coefficient for output and hidden lasagne_layers is ' + str(self.regul_coef))
-            l1_penalty = lasagne.regularization.regularize_layer_params(self.l_out_gaus, l1) * regul_coef_out * l1_share_out
-            l2_penalty = lasagne.regularization.regularize_layer_params(self.l_out_gaus, l2) * regul_coef_out * (1-l1_share_out)
+            l1_penalty = lasagne.regularization.regularize_layer_params(self.l_pi_out, l1) * regul_coef_out * l1_share_out
+            l2_penalty = lasagne.regularization.regularize_layer_params(self.l_pi_out, l2) * regul_coef_out * (1-l1_share_out)
             l1_penalty = lasagne.regularization.regularize_layer_params(l_hid_text, l1) * regul_coef_hid * l1_share_hid
             l2_penalty = lasagne.regularization.regularize_layer_params(l_hid_text, l2) * regul_coef_hid * (1-l1_share_hid)
 
@@ -314,9 +485,9 @@ class NNModel_lang2loc():
 
 
         
-        parameters = lasagne.layers.get_all_params(self.l_out_gaus, trainable=True)
+        parameters = lasagne.layers.get_all_params(self.l_pi_out, trainable=True)
         updates = lasagne.updates.adam(loss, parameters, learning_rate=1e-3, beta1=0.9, beta2=0.999, epsilon=1e-8)
-        self.f_train = theano.function([self.X_sym, self.Y_sym], loss, updates=updates, on_unused_input='warn')
+        self.f_train = theano.function([self.X_sym, self.Y_sym], loss, updates=updates, on_unused_input='warn')#,  mode=theano.compile.MonitorMode(pre_func=inspect_inputs, post_func=inspect_outputs))
         self.f_val = theano.function([self.X_sym, self.Y_sym], loss, on_unused_input='warn')
         self.f_predict = theano.function([self.X_sym], [mus, sigmas, corxy, pis], on_unused_input='warn')
 
@@ -384,7 +555,7 @@ class NNModel_lang2loc():
         self.f_predict = theano.function([self.X_sym], output_eval, on_unused_input='warn')
         
     def set_params(self, params):
-        lasagne.layers.set_all_param_values(self.l_out_gaus, params)
+        lasagne.layers.set_all_param_values(self.l_pi_out, params)
     def iterate_minibatches(self, inputs, targets, batchsize, shuffle=False):
         assert inputs.shape[0] == targets.shape[0]
         if shuffle:
@@ -431,6 +602,12 @@ class NNModel_lang2loc():
                 l_val = self.f_val(x_batch, y_batch)
                 l_vals.append(l_val)
             l_val = np.mean(l_vals)
+            if np.isnan(l_val):
+                self.nan = True
+                return None
+            #logging.info('dev results')                
+            #latlon_pred = self.predict(X_dev)
+            #geo_latlon_eval(U_dev, userLocation, latlon_pred)
             '''
             if step % 10 == 0:
                 if self.sqerror:
@@ -456,9 +633,9 @@ class NNModel_lang2loc():
             if l_val < best_val_loss:
                 best_val_loss = l_val
                 if self.sqerror:
-                    best_params = lasagne.layers.get_all_param_values(self.l_out)
+                    best_params = lasagne.layers.get_all_param_values(self.l_pi_out)
                 else:
-                    best_params = lasagne.layers.get_all_param_values(self.l_out_gaus)
+                    best_params = lasagne.layers.get_all_param_values(self.l_pi_out)
                 n_validation_down = 0
             else:
                 n_validation_down += 1
@@ -469,14 +646,15 @@ class NNModel_lang2loc():
         if self.sqerror:
             lasagne.layers.set_all_param_values(self.l_out, best_params)
         else:
-            lasagne.layers.set_all_param_values(self.l_out_gaus, best_params)
+            lasagne.layers.set_all_param_values(self.l_pi_out, best_params)
         #logging.info('dumping the model...')
         #with open(model_file, 'wb') as fout:
         #    pickle.dump(best_params, fout)
                 
     def predict(self, X):
         mus_eval, sigmas_eval, corxy_eval, pis_eval = self.f_predict(X)
-        selected_mus = self.pred(mus_eval, sigmas_eval, corxy_eval, pis_eval)
+        mus_eval, sigmas_eval, corxy_eval, pis_eval = np.asarray(mus_eval), np.asarray(sigmas_eval), np.asarray(corxy_eval), np.asarray(pis_eval)
+        selected_mus = self.pred_sharedparams(mus_eval, sigmas_eval, corxy_eval, pis_eval)
         return selected_mus       
 
  
@@ -487,11 +665,7 @@ class NNModel_lang2loc():
           
 
 
-def get_cluster_centers(input, n_cluster, dtype='float32'):
-    #kmns = KMeans(n_clusters=n_cluster, n_jobs=10)
-    kmns = MiniBatchKMeans(n_clusters=n_cluster, batch_size=1000)
-    kmns.fit(input)
-    return kmns.cluster_centers_.astype(dtype)
+
     
           
 def load_data(data_home, **kwargs):
@@ -596,31 +770,41 @@ def train(data, **kwargs):
     ncomp = kwargs.get('ncomp', 100)
     dataset_name = kwargs.get('dataset_name')
     sqerror = kwargs.get('sqerror', False)
-    X_train, Y_train, X_dev, Y_dev, X_test, Y_test, U_train, U_dev, U_test, classLatMedian, classLonMedian, userLocation, loc_train = data
-    input_size = X_train.shape[1]
-    output_size = Y_train.shape[1] if len(Y_train.shape) == 2 else np.max(Y_train) + 1
-    batch_size = min(int(X_train.shape[0] / 10), 1000)
+    #X_train, Y_train, X_dev, Y_dev, X_test, Y_test, U_train, U_dev, U_test, classLatMedian, classLonMedian, userLocation, loc_train = data
+    input_size = data[0].shape[1]
+    output_size = data[1].shape[1] if len(data[1].shape) == 2 else np.max(data[1]) + 1
+    batch_size = 2000
     logging.info('batch size %d' % batch_size)
     max_down = 20 if dataset_name == 'cmu' else 5 
-    model = NNModel_lang2loc(n_epochs=10000, batch_size=batch_size, regul_coef=regul, 
+    mus, raw_stds, raw_cors = get_cluster_centers(data[12], n_cluster=ncomp)
+    #just set the mus let sigmas and corxys to be initialised!
+    raw_stds, raw_cors = None, None
+    model = NNModel_lang2loc2(n_epochs=10000, batch_size=batch_size, regul_coef=regul, 
                     input_size=input_size, output_size=output_size, hid_size=hid_size, 
                     drop_out=True, dropout_coef=dropout_coef, early_stopping_max_down=max_down, 
-                    input_sparse=True, reload=False, ncomp=ncomp, autoencoder=autoencoder, sqerror=sqerror)
+                    input_sparse=True, reload=False, ncomp=ncomp, autoencoder=autoencoder, sqerror=sqerror,
+                    mus=mus, sigmas=raw_stds, corxy=raw_cors)
 
-    model.fit(X_train, Y_train, X_dev, Y_dev, X_test, Y_test, U_train, U_dev, U_test, userLocation)
+    model.fit(data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[11])
+    if model.nan:
+        logging.info('nan occurred')
+        return 0, 0, 0
     #save some space before prediction
-    del X_train
-    del Y_train
+
     if model.sqerror:
-        latlon_pred = model.predict_regression(X_dev)
+        latlon_pred = model.predict_regression(data[2])
     else:
-        latlon_preds = []
-        for batch in model.iterate_minibatches(X_dev, X_dev, model.batch_size, shuffle=False):
-            x_batch, x_batch = batch
-            latlon_pred = model.predict(x_batch)
-            latlon_preds.append(latlon_pred)
-        latlon_pred = np.vstack(tuple(latlon_preds))
-    mean , median, acc = geo_latlon_eval(U_dev, userLocation, latlon_pred)
+        if dataset_name == 'cmu':
+            latlon_pred = model.predict(data[2])
+        else:
+            latlon_preds = []
+            for batch in model.iterate_minibatches(data[2], data[2], model.batch_size, shuffle=False):
+                x_batch, x_batch = batch
+                latlon_pred = model.predict(x_batch)
+                latlon_preds.append(latlon_pred)
+            latlon_pred = np.vstack(tuple(latlon_preds))
+
+    mean , median, acc = geo_latlon_eval(data[7], data[11], latlon_pred)
     return mean, median, acc
     #latlon_pred = model.predict(X_test)
     #geo_latlon_eval(U_test, userLocation, latlon_pred)
@@ -632,13 +816,17 @@ def tune(data, dataset_name, args, num_iter=100):
     for i in xrange(num_iter):
         logging.info('tuning iter %d' %i)
         np.random.seed(77)
-        regul_coef = random.choice([0.0, 1e-7, 1e-6, 1e-5, 1e-4])
-        drop_out_ceof = random.choice([0.0, 0.2, 0.5, 0.7])
-        hidden_size = random.choice([100, 200, 400, 800, 1000])
-        ncomp = random.choice([50, 100, 200, 400, 800])
+        regul_coef = random.choice([0.0, 1e-5])
+        drop_out_ceof = random.choice([0.0, 0.5, 0.7])
+        hidden_size = random.choice([300, 500])
+        ncomp = random.choice([500, 1000])
         logging.info('regul %f drop %f hidden %d ncomp %d' %(regul_coef, drop_out_ceof, hidden_size, ncomp))
-        mean, median, acc = train(data, regul_coef=regul_coef, dropout_coef=drop_out_ceof, 
-              hidden_size=hidden_size, ncomp=ncomp, dataset_name=dataset_name, sqerror=args.sqerror)
+        try:
+            mean, median, acc = train(data, regul_coef=regul_coef, dropout_coef=drop_out_ceof, hidden_size=hidden_size, ncomp=ncomp, dataset_name=dataset_name, sqerror=args.sqerror)
+        except:
+            logging.info('exception occurred')
+            continue
+
         scores = OrderedDict()
         scores['mean'], scores['median'], scores['acc'] = mean, median, acc
         params = OrderedDict()

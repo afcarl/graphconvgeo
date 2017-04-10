@@ -843,6 +843,8 @@ def tune(data, dataset_name, args, num_iter=100):
     random.seed()
     for ncomp in [100, 300, 900]:
         for hidden_size in [100, 300, 900]:
+            if hidden_size > ncomp:
+                continue
             for regul_coef in [0, 1e-5]:
                 for drop_out_ceof in [0, 0.5]:
                     np.random.seed(77)    
@@ -876,7 +878,7 @@ def parse_args(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument('-i','--dataset', metavar='str', help='dataset for dialectology', type=str, default='na')
     parser.add_argument('-bucket','--bucket', metavar='int', help='discretisation bucket size', type=int, default=300)
-    parser.add_argument('-batch','--batch', metavar='int', help='SGD batch size', type=int, default=500)
+    parser.add_argument('-batch','--batch', metavar='int', help='SGD batch size', type=int, default=0)
     parser.add_argument('-hid','--hidden', metavar='int', help='Hidden layer size', type=int, default=500)
     parser.add_argument('-mindf','--mindf', metavar='int', help='minimum document frequency in BoW', type=int, default=10)
     parser.add_argument('-d','--dir', metavar='str', help='home directory', type=str, default='./data')
@@ -899,7 +901,7 @@ def parse_args(argv):
     return args
 
 if __name__ == '__main__':
-    #nice -n 10 python loc2lang.py -d ~/datasets/cmu/processed_data/ -enc latin1 -reg 0 -drop 0.0 -mindf 10 -hid 500 -ncomp 500 -autoencoder 500 
+    #THEANO_FLAGS='device=cpu' nice -n 10 python lang2loc_mdnshared.py -d ~/datasets/cmu/processed_data/ -enc latin1 -reg 0 -drop 0.0 -mindf 10 -hid 500 -ncomp 500 -autoencoder 500 
     args = parse_args(sys.argv[1:])
     datadir = args.dir
     dataset_name = datadir.split('/')[-3]
@@ -911,8 +913,14 @@ if __name__ == '__main__':
     else:
         data = load_data(data_home=args.dir, encoding=args.encoding, mindf=args.mindf, grid=args.grid, dataset_name=dataset_name)
     
+    if args.batch:
+        batch_size = args.batch
+    else:
+        batch_size = 200 if dataset_name=='cmu' else 2000
+    
     if args.tune:
         tune(data, dataset_name, args)
     else:
         train(data, regul_coef=args.regularization, dropout_coef=args.dropout, 
-              hidden_size=args.hidden, autoencoder=args.autoencoder, grid=args.grid, rbf=args.rbf, ncomp=args.ncomp, dataset_name=dataset_name, sqerror=args.sqerror)
+              hidden_size=args.hidden, autoencoder=args.autoencoder, grid=args.grid, rbf=args.rbf, 
+              ncomp=args.ncomp, dataset_name=dataset_name, sqerror=args.sqerror, batch_size=batch_size)

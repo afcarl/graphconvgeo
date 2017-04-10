@@ -174,7 +174,7 @@ class BivariateGaussianLayer(Layer):
         if corxy is not None:
             corxy_init = corxy
         else:
-            corxy_init = np.random.uniform(low=-10, high=10, size=self.num_units).reshape((self.num_units,)).astype('float32')
+            corxy_init = np.random.randn(self.num_units,).reshape((self.num_units,)).astype('float32')
         
         self.mus = self.add_param(mus_init, mus_init.shape, name='mus')
         self.sigmas = self.add_param(sigmas_init, sigmas_init.shape, name='sigmas')
@@ -228,12 +228,12 @@ class MDNSharedParams(DenseLayer):
         if sigmas is not None:
             sigmas_init = sigmas
         else:
-            sigmas_init = np.random.uniform(low=5, high=10, size=(self.num_units, 2)).reshape((self.num_units,2)).astype('float32')
+            sigmas_init = np.array([10, 10]).astype('float32') * np.abs(np.random.randn(self.num_units, 2).reshape((self.num_units,2))).astype('float32')
         
         if corxy is not None:
             corxy_init = corxy
         else:
-            corxy_init = np.random.uniform(low=-10, high=10, size=self.num_units).reshape((self.num_units,)).astype('float32')
+            corxy_init = np.random.randn(self.num_units,).reshape((self.num_units,)).astype('float32')
         
         self.mus = self.add_param(mus_init, mus_init.shape, name='mus')
         self.sigmas = self.add_param(sigmas_init, sigmas_init.shape, name='sigmas')

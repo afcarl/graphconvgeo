@@ -751,7 +751,7 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
         urlat = 90
         urlon = 180
         
-    fig = plt.figure(figsize=(10, 8))
+    fig = plt.figure(figsize=(2, 1.25))
     grid_transform = kwargs.get('grid', False)
     ax = fig.add_subplot(111, axisbg='w', frame_on=False)
     grid_interpolation_method = 'cubic'
@@ -887,7 +887,7 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
                 #x, y = np.median(np.array(state), axis=0)
                 # You have to align x,y manually to avoid overlapping for little states
                 if draw_state_name:
-                    plt.text(x+.1, y, short_name, ha="center", fontsize=5)
+                    plt.text(x+.1, y, short_name, ha="center", fontsize=3)
                 #ax.add_patch(poly)
                 #pdb.set_trace()
                 printed_names += [short_name,] 
@@ -921,7 +921,7 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
             tick_locator = ticker.MaxNLocator(nbins=9)
             cbar.locator = tick_locator
             cbar.update_ticks()
-            cbar.ax.tick_params(labelsize=6) 
+            cbar.ax.tick_params(labelsize=4) 
             cbar.set_label('logprob')
             for line in cbar.lines: 
                 line.set_linewidth(20)
@@ -938,7 +938,7 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
                 poly = MplPolygon(state,facecolor='gray',edgecolor='gray')
                 ax.add_patch(poly)
             #plt.title('term: ' + word )
-            plt.savefig(map_dir + word + '_' + grid_interpolation_method +  '.pdf')
+            plt.savefig(map_dir + word + '_' + grid_interpolation_method +  '.pdf', dpi=200)
             plt.close()
             del m
 

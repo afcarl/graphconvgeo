@@ -53,6 +53,7 @@ from shapely.geometry import MultiPoint, Point, Polygon
 import shapefile
 from utils import short_state_names, stop_words, get_us_city_name
 from sklearn.cluster import KMeans, MiniBatchKMeans
+import utils
 logging.basicConfig(format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
 
 np.random.seed(77)
@@ -90,18 +91,27 @@ def geo_eval(y_true, y_pred, U_eval, classLatMedian, classLonMedian, userLocatio
         
     return np.mean(distances), np.median(distances), acc_at_161
 
-def geo_latlon_eval(U_eval, userLocation, latlon_pred):
+
+
+
+
+def geo_latlon_eval(U_eval, userLocation, latlon_pred, contour_error_on_map=False):
     distances = []
+    real_latlons = []
     for i in range(0, len(U_eval)):
         user = U_eval[i]
         location = userLocation[user].split(',')
         lat, lon = float(location[0]), float(location[1])
+        real_latlons.append([lat, lon])
         lat_pred, lon_pred = latlon_pred[i]
         distance = haversine((lat, lon), (lat_pred, lon_pred))
         distances.append(distance)
     acc_at_161 = 100 * len([d for d in distances if d < 161]) / float(len(distances))
     logging.info( "Mean: " + str(int(np.mean(distances))) + " Median: " + str(int(np.median(distances))) + " Acc@161: " + str(int(acc_at_161)))
     #logging.info("Mean %f Median %f acc@161 %f" %(np.mean(distances), np.median(distances), acc_at_161))
+    if contour_error_on_map:
+        coordinates = np.array(real_latlons)
+        utils.contour(coordinates, distances, filename='distance_contour_' + str(np.median(distances)))
     return np.mean(distances), np.median(distances), acc_at_161
 
 def get_cluster_centers(input, n_cluster, raw=True):
@@ -178,7 +188,7 @@ def detect_nan(i, node, fn):
                 print('Outputs: %s' % [output[0] for output in fn.outputs])
                 break
 
-class NNModel_lang2loc2():
+class NNModel_lang2locshared():
     def __init__(self, 
                  n_epochs=10, 
                  batch_size=1000, 
@@ -197,7 +207,8 @@ class NNModel_lang2loc2():
                  sqerror=False,
                  mus=None,
                  sigmas=None,
-                 corxy=None):
+                 corxy=None,
+                 dataset_name=''):
         self.n_epochs = n_epochs
         self.batch_size = batch_size
         self.regul_coef = regul_coef
@@ -217,6 +228,7 @@ class NNModel_lang2loc2():
         self.sigmas = sigmas
         self.corxy = corxy
         self.nan = False
+        self.dataset_name = dataset_name
         logging.info('building nn model with %d hidden size, %d bivariate gaussian components and %d output size' % (self.hid_size, self.n_bigaus_comp, self.output_size) )
         if self.sqerror:
             self.build_squarederror_regression()
@@ -569,7 +581,7 @@ class NNModel_lang2loc2():
             yield inputs[excerpt], targets[excerpt]       
     
     def fit(self, X_train, Y_train, X_dev, Y_dev, X_test, Y_test, U_train, U_dev, U_test, userLocation):
-        model_file = './data/lang2loc_hid%d_gaus%d_out%d_autoenc%d.pkl' %(self.hid_size, self.n_bigaus_comp, self.output_size, self.autoencoder)
+        model_file = './data/lang2locshared_%s_hid%d_gaus%d.pkl' %(self.dataset_name, self.hid_size, self.n_bigaus_comp)
         if self.reload:
             if path.exists(model_file):
                 logging.info('loading the model from %s' %model_file)
@@ -770,20 +782,20 @@ def train(data, **kwargs):
     ncomp = kwargs.get('ncomp', 100)
     dataset_name = kwargs.get('dataset_name')
     sqerror = kwargs.get('sqerror', False)
+    batch_size = kwargs.get('batch_size', 200 if dataset_name=='cmu' else 2000)
     #X_train, Y_train, X_dev, Y_dev, X_test, Y_test, U_train, U_dev, U_test, classLatMedian, classLonMedian, userLocation, loc_train = data
     input_size = data[0].shape[1]
     output_size = data[1].shape[1] if len(data[1].shape) == 2 else np.max(data[1]) + 1
-    batch_size = 2000
     logging.info('batch size %d' % batch_size)
     max_down = 20 if dataset_name == 'cmu' else 5 
     mus, raw_stds, raw_cors = get_cluster_centers(data[12], n_cluster=ncomp)
     #just set the mus let sigmas and corxys to be initialised!
     raw_stds, raw_cors = None, None
-    model = NNModel_lang2loc2(n_epochs=10000, batch_size=batch_size, regul_coef=regul, 
+    model = NNModel_lang2locshared(n_epochs=10000, batch_size=batch_size, regul_coef=regul, 
                     input_size=input_size, output_size=output_size, hid_size=hid_size, 
                     drop_out=True, dropout_coef=dropout_coef, early_stopping_max_down=max_down, 
                     input_sparse=True, reload=False, ncomp=ncomp, autoencoder=autoencoder, sqerror=sqerror,
-                    mus=mus, sigmas=raw_stds, corxy=raw_cors)
+                    mus=mus, sigmas=raw_stds, corxy=raw_cors, dataset_name=dataset_name)
 
     model.fit(data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[11])
     if model.nan:
@@ -803,9 +815,25 @@ def train(data, **kwargs):
                 latlon_pred = model.predict(x_batch)
                 latlon_preds.append(latlon_pred)
             latlon_pred = np.vstack(tuple(latlon_preds))
+    logging.info('dev results:')
+    mean , median, acc = geo_latlon_eval(data[7], data[11], latlon_pred, contour_error_on_map=True)
+    
+    if model.sqerror:
+        latlon_pred = model.predict_regression(data[4])
+    else:
+        if dataset_name == 'cmu':
+            latlon_pred = model.predict(data[4])
+        else:
+            latlon_preds = []
+            for batch in model.iterate_minibatches(data[4], data[4], model.batch_size, shuffle=False):
+                x_batch, x_batch = batch
+                latlon_pred = model.predict(x_batch)
+                latlon_preds.append(latlon_pred)
+            latlon_pred = np.vstack(tuple(latlon_preds))
+    logging.info('test results:')
+    mean_test , median_test, acc_test = geo_latlon_eval(data[8], data[11], latlon_pred)
 
-    mean , median, acc = geo_latlon_eval(data[7], data[11], latlon_pred)
-    return mean, median, acc
+    return mean, median, acc, mean_test, median_test, acc_test
     #latlon_pred = model.predict(X_test)
     #geo_latlon_eval(U_test, userLocation, latlon_pred)
 
@@ -813,27 +841,26 @@ def tune(data, dataset_name, args, num_iter=100):
     logging.info('tuning over %s' %dataset_name)
     param_scores = []
     random.seed()
-    for i in xrange(num_iter):
-        logging.info('tuning iter %d' %i)
-        np.random.seed(77)
-        regul_coef = random.choice([0.0, 1e-5])
-        drop_out_ceof = random.choice([0.0, 0.5, 0.7])
-        hidden_size = random.choice([300, 500])
-        ncomp = random.choice([500, 1000])
-        logging.info('regul %f drop %f hidden %d ncomp %d' %(regul_coef, drop_out_ceof, hidden_size, ncomp))
-        try:
-            mean, median, acc = train(data, regul_coef=regul_coef, dropout_coef=drop_out_ceof, hidden_size=hidden_size, ncomp=ncomp, dataset_name=dataset_name, sqerror=args.sqerror)
-        except:
-            logging.info('exception occurred')
-            continue
-
-        scores = OrderedDict()
-        scores['mean'], scores['median'], scores['acc'] = mean, median, acc
-        params = OrderedDict()
-        params['regul'], params['dropout'], params['hidden'], params['ncomp'] = regul_coef, drop_out_ceof, hidden_size, ncomp
-        param_scores.append([params, scores])
-        logging.info(params)
-        logging.info(scores)
+    for ncomp in [100, 300, 900]:
+        for hidden_size in [100, 300, 900]:
+            for regul_coef in [0, 1e-5]:
+                for drop_out_ceof in [0, 0.5]:
+                    np.random.seed(77)    
+                    logging.info('regul %f drop %f hidden %d ncomp %d' %(regul_coef, drop_out_ceof, hidden_size, ncomp))
+                    try:
+                        mean, median, acc, mean_test, median_test, acc_test = train(data, regul_coef=regul_coef, dropout_coef=drop_out_ceof, hidden_size=hidden_size, ncomp=ncomp, dataset_name=dataset_name, sqerror=args.sqerror)
+                    except:
+                        logging.info('exception occurred')
+                        continue
+            
+                    scores = OrderedDict()
+                    scores['mean_dev'], scores['median_dev'], scores['acc_dev'] = mean, median, acc
+                    scores['mean_test'], scores['median_test'], scores['acc_test'] = mean_test, median_test, acc_test
+                    params = OrderedDict()
+                    params['regul'], params['dropout'], params['hidden'], params['ncomp'] = regul_coef, drop_out_ceof, hidden_size, ncomp
+                    param_scores.append([params, scores])
+                    logging.info(params)
+                    logging.info(scores)
     for param_score in param_scores:
         logging.info(param_score)
         

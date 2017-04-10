@@ -169,7 +169,7 @@ class BivariateGaussianLayer(Layer):
         if sigmas is not None:
             sigmas_init = sigmas
         else:
-            sigmas_init = np.random.uniform(low=1, high=10, size=(self.num_units, 2).reshape((self.num_units,2))).astype('float32')
+            sigmas_init = np.array([10, 10]).astype('float32') * np.abs(np.random.randn(self.num_units, 2).reshape((self.num_units,2))).astype('float32')
         
         if corxy is not None:
             corxy_init = corxy
@@ -228,7 +228,7 @@ class MDNSharedParams(DenseLayer):
         if sigmas is not None:
             sigmas_init = sigmas
         else:
-            sigmas_init = np.random.uniform(low=1, high=10, size=(self.num_units, 2)).reshape((self.num_units,2)).astype('float32')
+            sigmas_init = np.random.uniform(low=5, high=10, size=(self.num_units, 2)).reshape((self.num_units,2)).astype('float32')
         
         if corxy is not None:
             corxy_init = corxy

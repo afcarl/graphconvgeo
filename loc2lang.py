@@ -55,6 +55,7 @@ from shapely.geometry import MultiPoint, Point, Polygon
 import shapefile
 from utils import short_state_names, stop_words, get_us_city_name
 from sklearn.cluster import KMeans, MiniBatchKMeans
+import utils
 logging.basicConfig(format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
 
 np.random.seed(77)
@@ -127,7 +128,9 @@ class NNModel():
                  n_gaus_comp=500,
                  mus=None,
                  sigmas=None,
-                 corxy=None):
+                 corxy=None,
+                 nomdn=False,
+                 dataset_name=''):
         self.n_epochs = n_epochs
         self.batch_size = batch_size
         self.regul_coef = regul_coef
@@ -143,6 +146,8 @@ class NNModel():
         self.mus = mus
         self.sigmas = sigmas
         self.corxy = corxy
+        self.nomdn = nomdn
+        self.dataset_name = dataset_name
         logging.info('building nn model with %d gaussian components and %d hidden layer...' % (self.n_gaus_comp, self.hid_size))
         self.build()
         
@@ -155,15 +160,17 @@ class NNModel():
         l_in = lasagne.layers.InputLayer(shape=(None, self.input_size),
                                          input_var=self.X_sym)
 
+        if self.nomdn:
+            logging.info('adding tanh layer instead of MDN')
+            l_gaus = lasagne.layers.DenseLayer(l_in, num_units=self.hid_size, 
+                                              nonlinearity=lasagne.nonlinearities.tanh,
+                                              W=lasagne.init.GlorotUniform())
+        else:
+            logging.info('adding %d-comp bivariate gaussian layer...' %self.n_gaus_comp)
+            l_gaus = BivariateGaussianLayer(l_in, num_units=self.n_gaus_comp, mus=self.mus, sigmas=self.sigmas, corxy=self.corxy)
 
-        logging.info('adding %d-comp bivariate gaussian layer...' %self.n_gaus_comp)
-        l_gaus = BivariateGaussianLayer(l_in, num_units=self.n_gaus_comp, mus=self.mus, sigmas=self.sigmas, corxy=self.corxy)
+        
 
-        self.gaus_output = lasagne.layers.get_output(l_gaus, self.X_sym)
-        if self.autoencoder:
-            self.l_out_autoencoder = lasagne.layers.DenseLayer(l_gaus, num_units=self.input_size, 
-                                                               nonlinearity=lasagne.nonlinearities.linear,
-                                                               W=lasagne.init.GlorotUniform())
         if self.hid_size:
             l_hid = lasagne.layers.DenseLayer(l_gaus, num_units=self.hid_size, 
                                               nonlinearity=lasagne.nonlinearities.tanh,
@@ -176,6 +183,7 @@ class NNModel():
                                           W=lasagne.init.GlorotUniform())
         
         
+        self.gaus_output = lasagne.layers.get_output(l_gaus, self.X_sym)
         self.eval_output = lasagne.layers.get_output(self.l_out, self.X_sym, deterministic=True)
         self.output = lasagne.layers.get_output(self.l_out, self.X_sym)
         loss = lasagne.objectives.categorical_crossentropy(self.output, self.Y_sym)
@@ -185,25 +193,10 @@ class NNModel():
 
 
         
-        if self.autoencoder:
-            self.autoencoder_eval_output = lasagne.layers.get_output(self.l_out_autoencoder, self.X_sym, deterministic=True)
-            self.autoencoder_output = lasagne.layers.get_output(self.l_out_autoencoder, self.X_sym)
-            autoencoder_loss = lasagne.objectives.squared_error(self.Y_sym, self.autoencoder_output)
-            autoencoder_loss = autoencoder_loss.mean() 
-            autoencoder_loss_eval = lasagne.objectives.squared_error(self.Y_sym, self.autoencoder_eval_output)
-            autoencoder_loss_eval = autoencoder_loss_eval.mean()
+
 
  
-        if self.regul_coef:
-            l1_share_out = 0.0
-            l1_share_hid = 0.5
-            regul_coef_out, regul_coef_hid = self.regul_coef, self.regul_coef
-            logging.info('regul coefficient for output and hidden lasagne_layers is ' + str(self.regul_coef))
-            l1_penalty = lasagne.regularization.regularize_layer_params(self.l_out, l1) * regul_coef_out * l1_share_out
-            l2_penalty = lasagne.regularization.regularize_layer_params(self.l_out, l2) * regul_coef_out * (1-l1_share_out)
-            l1_penalty += lasagne.regularization.regularize_layer_params(l_hid, l1) * regul_coef_hid * l1_share_hid
-            l2_penalty += lasagne.regularization.regularize_layer_params(l_hid, l2) * regul_coef_hid * (1-l1_share_hid)
-            loss = loss + l1_penalty + l2_penalty
+
         
         
         parameters = lasagne.layers.get_all_params(self.l_out, trainable=True)
@@ -212,12 +205,7 @@ class NNModel():
         self.f_train = theano.function([self.X_sym, self.Y_sym], loss, updates=updates, on_unused_input='warn')
         self.f_val = theano.function([self.X_sym, self.Y_sym], eval_loss, on_unused_input='warn')
         self.f_predict_proba = theano.function([self.X_sym], self.eval_output, on_unused_input='warn') 
-        if self.autoencoder:
-            autoencoder_parameters = lasagne.layers.get_all_params(self.l_out_autoencoder, trainable=True)
-            autoencoder_updates = lasagne.updates.adamax(autoencoder_loss, autoencoder_parameters, learning_rate=2e-3, beta1=0.9, beta2=0.999, epsilon=1e-8)
-            self.f_train_autoencoder = theano.function([self.X_sym, self.Y_sym], autoencoder_loss, updates=autoencoder_updates, on_unused_input='warn')#,  mode=theano.compile.MonitorMode(pre_func=inspect_inputs, post_func=inspect_outputs))
-            self.f_val_autoencoder = theano.function([self.X_sym, self.Y_sym], autoencoder_loss, on_unused_input='warn')
-            self.f_predict_autoencoder = theano.function([self.X_sym], self.autoencoder_eval_output, on_unused_input='warn')        
+     
 
     def set_params(self, params):
         lasagne.layers.set_all_param_values(self.l_out, params)
@@ -235,135 +223,71 @@ class NNModel():
             yield inputs[excerpt], targets[excerpt]       
     
     def fit(self, X_train, Y_train, X_dev, Y_dev, X_test, Y_test):
-        model_file = './data/loc2lang_hid%d_gaus%d_out%d_autoenc%d.pkl' %(self.hid_size, self.n_gaus_comp, self.output_size, self.autoencoder)
+        model_file = './data/loc2lang_%s_hid%d_gaus%d_out%d.pkl' %(self.dataset_name, self.hid_size, self.n_gaus_comp, self.output_size)
         if self.reload:
             if path.exists(model_file):
                 logging.info('loading the model from %s' %model_file)
                 with open(model_file, 'rb') as fin:
                     params = pickle.load(fin)
                 self.set_params(params)
-                return
-        logging.info('autoencoder training with %d n_epochs and  %d batch_size' %(self.autoencoder, self.batch_size))
-        best_l_autoencoder_val = sys.maxint
-        auto_down = 0
-        for i in xrange(self.autoencoder):
-            autoencoder_losses = []
-            for batch in self.iterate_minibatches(X_train, X_train, self.batch_size, shuffle=True):
-                x_batch, y_batch = batch
-                l_autoencoder = self.f_train_autoencoder(x_batch, y_batch)
-                autoencoder_losses.append(l_autoencoder)
-            l_val = self.f_val_autoencoder(X_dev, X_dev)
-            if l_val < best_l_autoencoder_val:
-                auto_down = 0
-                best_l_autoencoder_val = l_val
-            else:
-                auto_down += 1
-                if auto_down > 20:
-                    break
-            logging.info('autoencoder iter %d loss %f val loss %f' %(i, np.mean(autoencoder_losses), l_val))
-            if i % 100 == 0:
-                latlon_pred_autoencoder = self.predict_autoencoder(X_dev)
-                logging.info('dev autoencoder error')
-                geo_latlon_eval(X_dev, latlon_pred_autoencoder)
-        
-        logging.info('training with %d n_epochs and  %d batch_size' %(self.n_epochs, self.batch_size))
-        best_params = None
-        best_val_loss = sys.maxint
-        n_validation_down = 0
-        
-        #train autoencoder
-        
-        for step in range(self.n_epochs):
-            #if step % 10 == 0:    
-            #    best_params = lasagne.layers.get_all_param_values(self.l_out)
-            #    visualise_bigaus(params_file=None, params=best_params, iter=step, output_type='png')
-            l_trains = []
-            for batch in self.iterate_minibatches(X_train, Y_train, self.batch_size, shuffle=True):
-                x_batch, y_batch = batch
-                if sp.sparse.issparse(y_batch): y_batch = y_batch.todense().astype('float32')
-                l_train = self.f_train(x_batch, y_batch)
-                l_trains.append(l_train)
-            l_train = np.mean(l_trains)
-            l_val = self.f_val(X_dev, Y_dev)
-            if l_val < best_val_loss: #and (best_val_loss - l_val) > (0.0001 * l_val):
-                best_params = lasagne.layers.get_all_param_values(self.l_out)
-                best_val_loss = l_val
-                logging.info('first mu (%f,%f) first covar (%f, %f, %f)' %(best_params[0][0, 0], best_params[0][0, 1], softplus(best_params[1][0, 0]), softplus(best_params[1][0, 1]), softsign(best_params[2][0])))
-                logging.info('second mu (%f,%f) second covar (%f, %f, %f)' %(best_params[0][1, 0], best_params[0][1, 1], softplus(best_params[1][1, 0]), softplus(best_params[1][1, 1]), softsign(best_params[2][1])))
-                n_validation_down = 0
-            else:
-                n_validation_down += 1
-                if n_validation_down > self.early_stopping_max_down:
-                    logging.info('validation results went down. early stopping ...')
-                    break
-
-            logging.info('iter %d, train loss %f, dev loss %f, best dev loss %f, num_down %d' %(step, l_train, l_val, best_val_loss, n_validation_down))
-        
-        lasagne.layers.set_all_param_values(self.l_out, best_params)
-        #for debugging the output of gaussian layer
-        #debug_gaussian(best_params)
-        
+                
+        else:
+            logging.info('training with %d n_epochs and  %d batch_size' %(self.n_epochs, self.batch_size))
+            best_params = None
+            best_val_loss = sys.maxint
+            n_validation_down = 0
+            
+            #train autoencoder
+            
+            for step in range(self.n_epochs):
+                #if step % 10 == 0:    
+                #    best_params = lasagne.layers.get_all_param_values(self.l_out)
+                #    visualise_bigaus(params_file=None, params=best_params, iter=step, output_type='png')
+                l_trains = []
+                for batch in self.iterate_minibatches(X_train, Y_train, self.batch_size, shuffle=True):
+                    x_batch, y_batch = batch
+                    if sp.sparse.issparse(y_batch): y_batch = y_batch.todense().astype('float32')
+                    l_train = self.f_train(x_batch, y_batch)
+                    l_trains.append(l_train)
+                l_train = np.mean(l_trains)
+                l_val = self.f_val(X_dev, Y_dev)
+                if l_val < best_val_loss: #and (best_val_loss - l_val) > (0.0001 * l_val):
+                    best_params = lasagne.layers.get_all_param_values(self.l_out)
+                    best_val_loss = l_val
+                    if not self.nomdn:
+                        logging.info('first mu (%f,%f) first covar (%f, %f, %f)' %(best_params[0][0, 0], best_params[0][0, 1], softplus(best_params[1][0, 0]), softplus(best_params[1][0, 1]), softsign(best_params[2][0])))
+                        logging.info('second mu (%f,%f) second covar (%f, %f, %f)' %(best_params[0][1, 0], best_params[0][1, 1], softplus(best_params[1][1, 0]), softplus(best_params[1][1, 1]), softsign(best_params[2][1])))
+                    n_validation_down = 0
+                else:
+                    n_validation_down += 1
+                    if n_validation_down > self.early_stopping_max_down:
+                        logging.info('validation results went down. early stopping ...')
+                        break
+    
+                logging.info('iter %d, train loss %f, dev loss %f, best dev loss %f, num_down %d' %(step, l_train, l_val, best_val_loss, n_validation_down))
+            
+            lasagne.layers.set_all_param_values(self.l_out, best_params)
+            #for debugging the output of gaussian layer
+            #debug_gaussian(best_params)
+            logging.info('dumping the model in %s' %model_file)
+            with open(model_file, 'wb') as fout:
+                pickle.dump(best_params, fout)        
         
         l_test = self.f_val(X_test, Y_test)
-        logging.info('test loss is %f and perplexity is %f' %(l_test, np.power(2, l_test)))
-        logging.info('dumping the model...')
-        with open(model_file, 'wb') as fout:
-            pickle.dump(best_params, fout)
+        perplexity_test = np.power(2, l_test)
+        logging.info('test loss is %f and perplexity is %f' %(l_test, perplexity_test))
+        l_dev = self.f_val(X_dev, Y_dev)
+        perplexity_dev = np.power(2, l_dev)
+        logging.info('dev loss is %f and perplexity is %f' %(l_dev, perplexity_dev))
+        
+
+        return perplexity_test, perplexity_dev
                 
     def predict(self, X):
         prob_dist = self.f_predict_proba(X)
         return prob_dist 
-    def predict_autoencoder(self, X):
-        output = self.f_predict_autoencoder(X)    
-        return output 
-    def debug_gaussian(self, best_params, X):
-        '''
-        given x array of lat/lons extract the learned gaussians, finds the probabilities
-        of each input sample for the second learned gaussian and produces the outputs and compares
-        the output probabilities to numpy bivariate gaussian pdf output.
-        '''
-        mus = best_params[0]
-        #apply soft plus (0, +inf)
-        sigmas = np.log(1 + np.exp(best_params[1]))
-        corxys = best_params[2]
-        #apply the soft sign (-1, +1)
-        corxys = corxys / (1 + np.abs(corxys))
-        sigmas = np.log(1 + np.exp(sigmas))
-         
-        mux, muy = best_params[0][1]
-        sigmax, sigmay = sigmas[1]
-        corxy = corxys[1]
-        sigmainvs = 1.0 / sigmas[1]
-        sigmaxinv, sigmayinv = sigmainvs
-        sigmainvprod = sigmaxinv * sigmayinv
-        sigmax2 = sigmax ** 2
-        sigmay2 = sigmay ** 2
-        corxy2 = corxy ** 2
-        
-        #now given corxy find sigmaxy
-        sigmaxy = corxy * sigmax * sigmay  
-        g_out = self.f_gaus(X)
-        for i in range(10):
-            x, y = X[i, :]
-            xdiff, ydiff = x-mux, y-muy
-            diffprod = xdiff * ydiff
-            diffx2 = xdiff ** 2
-            diffy2 = ydiff ** 2
-            diffsigmax = diffx2 / sigmax2
-            diffsigmay = diffy2 / sigmay2
-            diffsigmanorm = diffsigmax + diffsigmay
-            z = diffsigmanorm - 2 * corxy * diffprod * sigmainvprod
-            oneminuscorxy2inv = 1.0 / (1.0 - corxy2)
-            expterm = np.exp(-0.5 * z * oneminuscorxy2inv)
-            prob = (0.5 / np.pi) * sigmainvprod * np.sqrt(oneminuscorxy2inv) * expterm
-            logging.info('computed prob: %f' %prob)
-            logging.info('mlab bivariate result: %f ' % mlab.bivariate_normal(x, y , sigmax=sigmax, sigmay=sigmay, mux=mux, muy=muy, sigmaxy=sigmaxy))
-            cov=np.array([[sigmax**2, sigmaxy],[sigmaxy,sigmay**2]])
-            mean = np.array([mux, muy])
-            rv = multivariate_normal(mean=mean, cov=cov) 
-            logging.info('scipy stat result: %f' %rv.pdf([x, y]))  
-            logging.info('network result: %f' %g_out[i][1])
-            logging.info('lat, lon: %f, %f' %(x, y))
+
+ 
 
  
 
@@ -393,15 +317,7 @@ def grid_representation(input, grid_size=0.5):
     normalize(X, norm='l1', copy=False)  
     return X.tocsr(copy=False)
           
-def norm_words(input):
-    '''
-    normalize each feature to unit norm, then normalize each sample to unit norm
-    '''
-    #normalize features to unit norm
-    normalize(input, norm='l1', axis=0, copy=False)
-    #normalize each sample to unit norm
-    normalize(input, norm='l1', axis=1, copy=False)
-    return input
+
 
 def get_cluster_centers(input, n_cluster, raw=True):
     '''
@@ -474,7 +390,16 @@ def get_named_entities(documents, mincount=10):
         if percent > 0.7:
             NEs.append(word)
     return NEs
-          
+
+def get_dare_words():
+    word_dialect = {}
+    with open('./data/geodare.cleansed.filtered.json', 'r') as fin:
+        for line in fin:
+            line = line.strip()
+            dialect_word = json.loads(line)
+            word_dialect[dialect_word['word']] = dialect_word['dialect'].lower()
+    return word_dialect
+     
 def load_data(data_home, **kwargs):
     bucket_size = kwargs.get('bucket', 300)
     dataset_name = kwargs.get('dataset_name')
@@ -485,21 +410,28 @@ def load_data(data_home, **kwargs):
     one_hot_label = kwargs.get('onehot', False)
     grid_transform = kwargs.get('grid', False)
     normalize_words = kwargs.get('norm', False)
-    city_stops = kwargs.get('city_stops', False)
 
 
-    if city_stops:
-        logging.info('adding city names to stop words')
-        city_names = list(get_us_city_name())
-        stop_words.extend(city_names)
+    vocab = None
+    vocab_file = './data/na_vocab.pkl'
+    if 'na' in dataset_name and path.exists(vocab_file):
+        with open(vocab_file, 'rb') as fin:
+            vocab = pickle.load(fin)
+    extract_vocab = False
+    norm = 'l1'
+    idf = True
+    if extract_vocab:
+        norm = None
+        idf = False
+        
     dl = DataLoader(data_home=data_home, bucket_size=bucket_size, encoding=encoding, 
                     celebrity_threshold=celebrity_threshold, one_hot_labels=one_hot_label, 
-                    mindf=mindf, maxdf=0.1, norm='l1', idf=True, btf=True, tokenizer=None, 
-                    subtf=True, stops=stop_words, token_pattern=r'(?u)(?<![@])\b\w\w+\b')
+                    mindf=mindf, maxdf=0.1, norm=norm, idf=idf, btf=True, tokenizer=None, 
+                    subtf=True, stops=stop_words, token_pattern=r'(?u)(?<![@])#?\b\w\w+\b', vocab=vocab)
     logging.info('loading dataset...')
     dl.load_data()
 
-    
+    #load words that often start with uppercase (heuristic named entity detection)
     ne_file = './data/ne_' + dataset_name + '.json'
     if path.exists(ne_file):
         with codecs.open(ne_file, 'r', encoding='utf-8') as fout:
@@ -520,14 +452,10 @@ def load_data(data_home, **kwargs):
     loc_dev = np.array([[a[0], a[1]] for a in dl.df_dev[['lat', 'lon']].values.tolist()], dtype='float32')
     
     dl.tfidf()
-    word_dialect = {}
-    with open('./data/geodare.cleansed.filtered.json', 'r') as fin:
-        for line in fin:
-            line = line.strip()
-            dialect_word = json.loads(line)
-            word_dialect[dialect_word['word']] = dialect_word['dialect']
+    word_dialect = get_dare_words()
 
-    extract_vocab = False
+
+    
     if extract_vocab:
         #words that should be used in the output and be predicted
         w_freq = np.array(dl.X_train.sum(axis=0))[0]
@@ -543,8 +471,8 @@ def load_data(data_home, **kwargs):
         for dare_w in frequent_dare_words:
             frequent_vocab_words.add(dare_w)
         new_vocab = sorted(frequent_vocab_words)
-        with open('./data/na_vocab.pkl', 'wb') as fin:
-            pickle.dump(new_vocab, fin)
+        with open('./data/' + dataset_name + '_vocab.pkl', 'wb') as fout:
+            pickle.dump(new_vocab, fout)
 
     
             
@@ -552,10 +480,6 @@ def load_data(data_home, **kwargs):
     W_dev = dl.X_dev.todense().astype('float32')
     W_test = dl.X_test.todense().astype('float32')
     
-    if normalize_words:
-        W_train = norm_words(W_train)
-        W_dev = norm_words(W_dev)
-        W_test = norm_words(W_test)
 
     vocab = dl.vectorizer.get_feature_names()
 
@@ -584,6 +508,92 @@ def load_data(data_home, **kwargs):
     
     data = (loc_train, W_train, loc_dev, W_dev, loc_test, W_test, vocab)
     return data
+
+def state_dialect_words(loc_train, vocab, model, N=1000):
+    #sample N training locations
+    indices = np.arange(loc_train.shape[0])
+    np.random.shuffle(indices)
+    random_indices = indices[0:2 * N]
+    sampled_locations = loc_train[random_indices, :]
+    all_loc_state = utils.get_state_from_coordinates(sampled_locations)
+    locs = all_loc_state.keys()
+    random.shuffle(locs)
+    locs = locs[0: N]
+    loc_state = {}
+    state_indices = defaultdict(list)
+    for i, loc in enumerate(locs):
+        state = all_loc_state[loc]
+        loc_state[loc] = state
+        state_indices[state].append(i)
+        
+    locs = np.array(locs).astype('float32')
+
+    sampled_preds = []
+    for batch in model.iterate_minibatches(locs, locs, model.batch_size, shuffle=False):
+        x_batch, y_batch = batch
+        batch_pred = model.predict(x_batch)
+        sampled_preds.append(batch_pred)
+    sampled_predictions = np.vstack(tuple(sampled_preds))
+
+    #sampled_predictions = model.predict(locs)
+    states = set([state.lower() for state in loc_state.values()])
+    word_dialect = get_dare_words()
+    dialects = set(word_dialect.values())
+    covered_dialects = dialects & states
+    logprobs = np.log(sampled_predictions)
+    #logprobs = sampled_predictions
+    state_count = [(s, len(indices)) for s, indices in state_indices.iteritems()]
+    logging.info(state_count)
+    global_mean_logprobs = np.mean(logprobs, axis=0)
+    state_ranking = {}
+    for state in covered_dialects:
+        state_loc_indices = state_indices[state]
+        state_logprobs = logprobs[state_loc_indices, :]
+        state_mean_logprobs = np.mean(state_logprobs, axis=0)
+        state_normalized_logprobs = state_mean_logprobs - global_mean_logprobs
+        sorted_vocab_indices = np.argsort(state_normalized_logprobs)
+        sorted_vocab = np.array(vocab)[sorted_vocab_indices].tolist()
+        state_ranking[state] = list(reversed(sorted_vocab))
+    printable_state_ranking = {s:rank[0:100] for s, rank in state_ranking.iteritems()}
+    with open('./data/state_ranking_' + str(len(vocab)) + '.json', 'w') as fout:
+        json.dump(printable_state_ranking, fout)
+    #recall at k for each state
+    #intervals = [5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 2e-2, 5e-2]
+    #ks = [max(1, int(i * len(vocab))) for i in intervals]
+    ks = [100, 500, 1000, 2000, 4000, 8000, 16000, len(vocab)]
+    k_recall = defaultdict(list)
+    oracle_k_recall = defaultdict(list)
+    for state in covered_dialects:
+        state_dare_words = set([w for w, s in word_dialect.iteritems() if s == state])
+        retrieved_words = state_ranking[state]
+        oracle_retrieved = list(set(retrieved_words) & state_dare_words)
+        logging.info('state DARE worlds in vocab: %d' %len(oracle_retrieved))
+        #recall at k
+        for k in ks:
+            words_at_k = set(retrieved_words[0:k])
+            #number of correct retrievals
+            correct = len(words_at_k & state_dare_words)
+            recall_at_k = float(correct) / len(state_dare_words)
+            k_recall[k].append(recall_at_k)
+            
+            
+            oracle_words_at_k = set(oracle_retrieved[0:k])
+            oracle_correct = len(oracle_words_at_k & state_dare_words)
+            oracle_recall_at_k = float(oracle_correct) / len(state_dare_words)
+            oracle_k_recall[k].append(oracle_recall_at_k)
+    
+    for k in ks:
+        recalls = k_recall[k]
+        oracle_recalls = oracle_k_recall[k]
+        logging.info('recall at %d is %f%% oracle %f%%' %(k, np.mean(recalls)*100, np.mean(oracle_recalls)*100))
+    
+        
+        
+        
+        
+        
+    
+      
     
 def train(data, **kwargs):
     dropout_coef = kwargs.get('dropout_coef', 0.5)
@@ -594,46 +604,61 @@ def train(data, **kwargs):
     n_gaus_comp = kwargs.get('ncomp', 500)
     dataset_name = kwargs.get('dataset_name')
     kmeans_mu = kwargs.get('kmeans', True)
+    nomdn = kwargs.get('nomdn', False)
+    tune = kwargs.get('tune', False)
     loc_train, W_train, loc_dev, W_dev, loc_test, W_test, vocab = data
     input_size = loc_train.shape[1]
     output_size = W_train.shape[1]
-    batch_size = 100 if W_train.shape[0] < 10000 else 5000
-
+    batch_size = 1000
+    
+    
     mus = None
-    if kmeans_mu:
-        logging.info('initializing mus, sigmas and corxy by clustering training points')
-        mus, raw_stds, raw_cors = get_cluster_centers(loc_train, n_cluster=n_gaus_comp)
-        logging.info('first mu is %s' %str(mus[0, :]))
-    else:
-        logging.info('initializing mus by n random training samples...')
-        #set all mus to center of US
-        indices = np.arange(loc_train.shape[0])
-        np.random.shuffle(indices)
-        random_indices = indices[0:n_gaus_comp]
-        mus = loc_train[random_indices, :]
-        set_to_center = False
-        if set_to_center:
-            for i in range(mus.shape[0]):
-                logging.info('set all mus to the center of USA with a little noise')
-                mus[i, 0] = 39.5 + np.random.uniform(low=-3, high=+3)
-                mus[i, 1] = -98.35 + np.random.uniform(low=-3, high=+3)
-        mus = mus.astype('float32')
-        raw_stds = None
-        raw_cors = None
+    raw_stds = None
+    raw_cors = None
+    if not nomdn:
+        if kmeans_mu:
+            logging.info('initializing mus, sigmas and corxy by clustering training points')
+            mus, raw_stds, raw_cors = get_cluster_centers(loc_train, n_cluster=n_gaus_comp)
+            logging.info('first mu is %s' %str(mus[0, :]))
+        else:
+            logging.info('initializing mus by n random training samples...')
+            #set all mus to center of US
+            indices = np.arange(loc_train.shape[0])
+            np.random.shuffle(indices)
+            random_indices = indices[0:n_gaus_comp]
+            mus = loc_train[random_indices, :]
+            set_to_center = False
+            if set_to_center:
+                for i in range(mus.shape[0]):
+                    logging.info('set all mus to the center of USA with a little noise')
+                    mus[i, 0] = 39.5 + np.random.uniform(low=-3, high=+3)
+                    mus[i, 1] = -98.35 + np.random.uniform(low=-3, high=+3)
+            mus = mus.astype('float32')
+            raw_stds = None
+            raw_cors = None
     
     model = NNModel(n_epochs=1000, batch_size=batch_size, regul_coef=regul, 
                     input_size=input_size, output_size=output_size, hid_size=hid_size, 
-                    drop_out=True, dropout_coef=dropout_coef, early_stopping_max_down=10, 
-                    autoencoder=autoencoder, reload=False, n_gaus_comp=n_gaus_comp, mus=mus, sigmas=raw_stds, corxy=raw_cors)
+                    drop_out=False, dropout_coef=dropout_coef, early_stopping_max_down=5, 
+                    autoencoder=autoencoder, reload=False, n_gaus_comp=n_gaus_comp, mus=mus, 
+                    sigmas=raw_stds, corxy=raw_cors, nomdn=nomdn, dataset_name=dataset_name)
     #pdb.set_trace()
-    model.fit(loc_train, W_train, loc_dev, W_dev, loc_test, W_test)
+    perplexity_test, perplexity_dev = model.fit(loc_train, W_train, loc_dev, W_dev, loc_test, W_test)
     #model.fit(loc_train, loc_train, loc_dev, loc_dev, loc_test, loc_test)
-    if autoencoder:
-        pred_test_autoencoder = model.predict_autoencoder(loc_test)
-        logging.info('test autoencoder error')
-        geo_latlon_eval(loc_test, pred_test_autoencoder)
+    
+    
+    state_dialect_words(loc_train, vocab, model, N=10000 if dataset_name=='na' else 5000)
 
-    k = 50
+    if tune:
+        return perplexity_test, perplexity_dev
+    
+    #load named entities
+    ne_file = './data/ne_' + dataset_name + '.json'
+    with codecs.open(ne_file, 'r', encoding='utf-8') as fout:
+        NEs = json.load(fout)
+    NEs = set(NEs['nes'])
+    
+    k = 150
     with open('./data/cities.json', 'r') as fin:
         cities = json.load(fin)
     local_word_file = './data/local_words_'  + str(W_train.shape)+ '_' + str(n_gaus_comp) + '.txt'
@@ -649,10 +674,16 @@ def train(data, **kwargs):
             preds = model.predict(loc)
             topword_indices = np.argsort(preds)[0][::-1][:k]
             topwords = [vocab[i] for i in topword_indices]
+            #check if a topword is a named entity add a star beside it
+            newtopwords = []
+            for topword in topwords:
+                if topword in NEs:
+                    topword = topword + "_NE"
+                newtopwords.append(topword)
             #logging.info(name)
             #logging.info(str(topwords))
             fout.write('\n*****%s*****\n' %name)
-            fout.write(str(topwords))
+            fout.write(str(newtopwords))
             
     
     
@@ -906,13 +937,13 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
                     if shapedict['CNTR_ID'] in top_countries: continue
                 poly = MplPolygon(state,facecolor='gray',edgecolor='gray')
                 ax.add_patch(poly)
-            plt.title('term: ' + word )
+            #plt.title('term: ' + word )
             plt.savefig(map_dir + word + '_' + grid_interpolation_method +  '.pdf')
             plt.close()
             del m
 
   
-def visualise_bigaus(params_file, params=None, iter=None, output_type='png', **kwargs):
+def visualise_bigaus(params_file, params=None, iter=None, output_type='pdf', **kwargs):
     if params == None:
         with open(params_file, 'rb') as fin:
             params = pickle.load(fin)
@@ -929,7 +960,7 @@ def visualise_bigaus(params_file, params=None, iter=None, output_type='png', **k
         lllon = -180
         urlat = 90
         urlon = 180
-    fig = plt.figure(figsize=(10, 8))
+    fig = plt.figure(figsize=(4, 2.5))
     ax = fig.add_subplot(111, axisbg='w', frame_on=False)
     m = Basemap(llcrnrlat=lllat,
     urcrnrlat=urlat,
@@ -1045,9 +1076,39 @@ def visualise_bigaus(params_file, params=None, iter=None, output_type='png', **k
         iter = str(iter).zfill(3)
     else:
         iter = ''
-    plt.savefig('./maps/video/gaus_' + iter  + '.' + output_type, frameon=False, dpi=600)
+    plt.tight_layout()
+    plt.savefig('./maps/video/gaus_' + iter  + '.' + output_type, frameon=False, dpi=200)
     plt.close()
 
+def tune(data, dataset_name, args, num_iter=100):
+    logging.info('tuning over %s' %dataset_name)
+    param_scores = []
+    random.seed()
+    for i in xrange(num_iter):
+        logging.info('tuning iter %d' %i)
+        np.random.seed(77)
+        hidden_size = random.choice([300, 600, 900])
+        ncomp = random.choice([250, 500, 1000])
+        if args.nomdn:
+            ncomp = 0
+        logging.info('hidden %d ncomp %d' %(hidden_size, ncomp))
+        try:
+            perplexity_test, perplexity_dev = train(data, regul_coef=args.regularization, dropout_coef=args.dropout, 
+                  hidden_size=hidden_size, autoencoder=args.autoencoder, ncomp=ncomp, dataset_name=dataset_name, tune=True, nomdn=args.nomdn)
+
+        except:
+            logging.info('exception occurred')
+            continue
+
+        scores = OrderedDict()
+        scores['perplexity_test'], scores['perplexity_dev'] = perplexity_test, perplexity_dev
+        params = OrderedDict()
+        params['hidden'], params['ncomp'] =  hidden_size, ncomp
+        param_scores.append([params, scores])
+        logging.info(params)
+        logging.info(scores)
+    for param_score in param_scores:
+        logging.info(param_score)
    
 def parse_args(argv):
     """
@@ -1072,15 +1133,15 @@ def parse_args(argv):
     parser.add_argument( '-tune', '--tune', action='store_true',  help='if true tune the hyper-parameters') 
     parser.add_argument( '-tf', '--tensorflow', action='store_true',  help='if exists run with tensorflow') 
     parser.add_argument( '-autoencoder', '--autoencoder', type=int,  help='the number of autoencoder steps before training', default=0) 
-    parser.add_argument( '-grid', '--grid', action='store_true',  help='if exists transforms the input from lat/lon to distance from grids on map') 
-    #parser.add_argument( '-rbf', '--rbf', action='store_true',  help='if exists transforms the input from lat/lon to rbf probabilities and learns centers and sigmas as well.') 
+    parser.add_argument( '-grid', '--grid', action='store_true',  help='if exists transforms the input from lat/lon to distance from grids on map')  
     parser.add_argument( '-ncomp', type=int,  help='the number of bivariate gaussians after the input layer', default=500) 
     parser.add_argument( '-m', '--message', type=str) 
-    parser.add_argument( '-vbi', '--vbi', type=str,  help='if exists load params from vbi file and visualize bivariate gaussians on a map', default=None) 
+    parser.add_argument( '-vbi', '--vbi', type=str,  help='if exists load params from vbi file and visualize bivariate gaussians on a map', default=None)
+    parser.add_argument( '-nomdn', '--nomdn', action='store_true',  help='if true use tanh layer instead of MDN') 
     args = parser.parse_args(argv)
     return args
 if __name__ == '__main__':
-    #nice -n 10 python loc2lang.py -d ~/datasets/na/processed_data/ -enc utf-8 -reg 0 -drop 0.0 -mindf 200 -hid 1000 -ncomp 100 -autoencoder 100 -map
+    #THEANO_FLAGS='device=cpu' nice -n 10 python loc2lang.py -d ~/datasets/na/processed_data/ -enc utf-8 -reg 0 -drop 0.0 -mindf 200 -hid 1000 -ncomp 100 -autoencoder 100 -map
     args = parse_args(sys.argv[1:])
     datadir = args.dir
     dataset_name = datadir.split('/')[-3]
@@ -1091,5 +1152,8 @@ if __name__ == '__main__':
         contour_me(grid=args.grid, dataset_name=dataset_name)
     else:
         data = load_data(data_home=args.dir, encoding=args.encoding, mindf=args.mindf, grid=args.grid, dataset_name=dataset_name)
-        train(data, regul_coef=args.regularization, dropout_coef=args.dropout, 
-              hidden_size=args.hidden, autoencoder=args.autoencoder, ncomp=args.ncomp, dataset_name=dataset_name)
+        if args.tune:
+            tune(data, dataset_name, args, num_iter=100)
+        else:
+            train(data, regul_coef=args.regularization, dropout_coef=args.dropout, 
+                  hidden_size=args.hidden, autoencoder=args.autoencoder, ncomp=args.ncomp, dataset_name=dataset_name, nomdn=args.nomdn)

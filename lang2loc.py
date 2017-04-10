@@ -53,6 +53,7 @@ from shapely.geometry import MultiPoint, Point, Polygon
 import shapefile
 from utils import short_state_names, stop_words, get_us_city_name
 from sklearn.cluster import KMeans, MiniBatchKMeans
+import utils
 logging.basicConfig(format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
 
 np.random.seed(77)
@@ -77,18 +78,23 @@ def geo_eval(y_true, y_pred, U_eval, classLatMedian, classLonMedian, userLocatio
         
     return np.mean(distances), np.median(distances), acc_at_161
 
-def geo_latlon_eval(U_eval, userLocation, latlon_pred):
+def geo_latlon_eval(U_eval, userLocation, latlon_pred, contour_error_on_map=False):
     distances = []
+    real_latlons = []
     for i in range(0, len(U_eval)):
         user = U_eval[i]
         location = userLocation[user].split(',')
         lat, lon = float(location[0]), float(location[1])
+        real_latlons.append([lat, lon])
         lat_pred, lon_pred = latlon_pred[i]
         distance = haversine((lat, lon), (lat_pred, lon_pred))
         distances.append(distance)
     acc_at_161 = 100 * len([d for d in distances if d < 161]) / float(len(distances))
     logging.info( "Mean: " + str(int(np.mean(distances))) + " Median: " + str(int(np.median(distances))) + " Acc@161: " + str(int(acc_at_161)))
     #logging.info("Mean %f Median %f acc@161 %f" %(np.mean(distances), np.median(distances), acc_at_161))
+    if contour_error_on_map:
+        coordinates = np.array(real_latlons)
+        utils.contour(coordinates, distances, filename='distance_contour_' + str(np.median(distances)))
     return np.mean(distances), np.median(distances), acc_at_161
 
 class NNModel_lang2loc():
@@ -107,7 +113,8 @@ class NNModel_lang2loc():
                  input_sparse=False,
                  reload=False,
                  ncomp=100,
-                 sqerror=False):
+                 sqerror=False,
+                 dataset_name=''):
         self.n_epochs = n_epochs
         self.batch_size = batch_size
         self.regul_coef = regul_coef
@@ -123,6 +130,7 @@ class NNModel_lang2loc():
         self.reload = reload
         self.n_bigaus_comp = ncomp
         self.sqerror = sqerror
+        self.dataset_name = dataset_name
         logging.info('building nn model with %d hidden size, %d bivariate gaussian components and %d output size' % (self.hid_size, self.n_bigaus_comp, self.output_size) )
         if self.sqerror:
             self.build_squarederror_regression()
@@ -398,16 +406,15 @@ class NNModel_lang2loc():
             yield inputs[excerpt], targets[excerpt]       
     
     def fit(self, X_train, Y_train, X_dev, Y_dev, X_test, Y_test, U_train, U_dev, U_test, userLocation):
-        model_file = './data/lang2loc_hid%d_gaus%d_out%d_autoenc%d.pkl' %(self.hid_size, self.n_bigaus_comp, self.output_size, self.autoencoder)
+        model_file = './data/lang2loc_%s_hid%d_gaus%d.pkl' %(self.dataset_name, self.hid_size, self.n_bigaus_comp)
         if self.reload:
             if path.exists(model_file):
                 logging.info('loading the model from %s' %model_file)
                 with open(model_file, 'rb') as fin:
                     params = pickle.load(fin)
                 self.set_params(params)
-                 
+                return
 
-                    
                
         
         
@@ -423,36 +430,12 @@ class NNModel_lang2loc():
                 l_train = self.f_train(x_batch, y_batch)
                 l_trains.append(l_train)
             l_train = np.mean(l_trains)
-                #latlon_pred = self.predict(x_batch)
-                #logging.info(latlon_pred[0])
             l_vals = []
             for batch in self.iterate_minibatches(X_dev, Y_dev, self.batch_size, shuffle=False):
                 x_batch, y_batch = batch
                 l_val = self.f_val(x_batch, y_batch)
                 l_vals.append(l_val)
             l_val = np.mean(l_vals)
-            '''
-            if step % 10 == 0:
-                if self.sqerror:
-                    latlon_pred = self.predict_regression(X_dev)
-                else:
-                    latlon_pred = self.predict(X_dev)
-                logging.info(latlon_pred[0])
-                logging.info(Y_dev[0])
-                logging.info(latlon_pred[1])
-                logging.info(Y_dev[1])
-                logging.info('dev results')                
-                geo_latlon_eval(U_dev, userLocation, latlon_pred)
-            #commented because it consumes a lot of memory (should be done in batches).
-            
-            if step % 100 == 0:
-                logging.info('***train results***')
-                if self.sqerror:
-                    latlon_pred = self.predict_regression(X_train)
-                else:
-                    latlon_pred = self.predict(X_train)
-                geo_latlon_eval(U_train, userLocation, latlon_pred)
-            '''
             if l_val < best_val_loss:
                 best_val_loss = l_val
                 if self.sqerror:
@@ -595,17 +578,17 @@ def train(data, **kwargs):
     rbf = kwargs.get('rbf', False)
     ncomp = kwargs.get('ncomp', 100)
     dataset_name = kwargs.get('dataset_name')
+    batch_size = kwargs.get('batch_size', 200 if dataset_name=='cmu' else 1000)
     sqerror = kwargs.get('sqerror', False)
     X_train, Y_train, X_dev, Y_dev, X_test, Y_test, U_train, U_dev, U_test, classLatMedian, classLonMedian, userLocation, loc_train = data
     input_size = X_train.shape[1]
     output_size = Y_train.shape[1] if len(Y_train.shape) == 2 else np.max(Y_train) + 1
-    batch_size = min(int(X_train.shape[0] / 10), 1000)
     logging.info('batch size %d' % batch_size)
     max_down = 20 if dataset_name == 'cmu' else 5 
     model = NNModel_lang2loc(n_epochs=10000, batch_size=batch_size, regul_coef=regul, 
                     input_size=input_size, output_size=output_size, hid_size=hid_size, 
                     drop_out=True, dropout_coef=dropout_coef, early_stopping_max_down=max_down, 
-                    input_sparse=True, reload=False, ncomp=ncomp, autoencoder=autoencoder, sqerror=sqerror)
+                    input_sparse=True, reload=False, ncomp=ncomp, autoencoder=autoencoder, sqerror=sqerror, dataset_name=dataset_name)
 
     model.fit(X_train, Y_train, X_dev, Y_dev, X_test, Y_test, U_train, U_dev, U_test, userLocation)
     #save some space before prediction
@@ -614,14 +597,33 @@ def train(data, **kwargs):
     if model.sqerror:
         latlon_pred = model.predict_regression(X_dev)
     else:
-        latlon_preds = []
-        for batch in model.iterate_minibatches(X_dev, X_dev, model.batch_size, shuffle=False):
-            x_batch, x_batch = batch
-            latlon_pred = model.predict(x_batch)
-            latlon_preds.append(latlon_pred)
-        latlon_pred = np.vstack(tuple(latlon_preds))
-    mean , median, acc = geo_latlon_eval(U_dev, userLocation, latlon_pred)
-    return mean, median, acc
+        if dataset_name == 'cmu':
+            latlon_pred = model.predict(X_dev)
+        else:
+            latlon_preds = []
+            for batch in model.iterate_minibatches(X_dev, X_dev, model.batch_size, shuffle=False):
+                x_batch, x_batch = batch
+                latlon_pred = model.predict(x_batch)
+                latlon_preds.append(latlon_pred)
+            latlon_pred = np.vstack(tuple(latlon_preds))
+    logging.info('dev results:')
+    mean_dev , median_dev, acc_dev = geo_latlon_eval(U_dev, userLocation, latlon_pred, contour_error_on_map=True)
+
+    logging.info('test results:')
+    if model.sqerror:
+        latlon_pred = model.predict_regression(X_test)
+    else:
+        if dataset_name == 'cmu':
+            latlon_pred = model.predict(X_test)
+        else:
+            latlon_preds = []
+            for batch in model.iterate_minibatches(X_test, X_test, model.batch_size, shuffle=False):
+                x_batch, x_batch = batch
+                latlon_pred = model.predict(x_batch)
+                latlon_preds.append(latlon_pred)
+            latlon_pred = np.vstack(tuple(latlon_preds))
+    mean_test , median_test, acc_test = geo_latlon_eval(U_test, userLocation, latlon_pred)
+    return mean_test, median_test, acc_test, mean_dev, median_dev, acc_dev
     #latlon_pred = model.predict(X_test)
     #geo_latlon_eval(U_test, userLocation, latlon_pred)
 
@@ -629,23 +631,27 @@ def tune(data, dataset_name, args, num_iter=100):
     logging.info('tuning over %s' %dataset_name)
     param_scores = []
     random.seed()
-    for i in xrange(num_iter):
-        logging.info('tuning iter %d' %i)
-        np.random.seed(77)
-        regul_coef = random.choice([0.0, 1e-7, 1e-6, 1e-5, 1e-4])
-        drop_out_ceof = random.choice([0.0, 0.2, 0.5, 0.7])
-        hidden_size = random.choice([100, 200, 400, 800, 1000])
-        ncomp = random.choice([50, 100, 200, 400, 800])
-        logging.info('regul %f drop %f hidden %d ncomp %d' %(regul_coef, drop_out_ceof, hidden_size, ncomp))
-        mean, median, acc = train(data, regul_coef=regul_coef, dropout_coef=drop_out_ceof, 
-              hidden_size=hidden_size, ncomp=ncomp, dataset_name=dataset_name, sqerror=args.sqerror)
-        scores = OrderedDict()
-        scores['mean'], scores['median'], scores['acc'] = mean, median, acc
-        params = OrderedDict()
-        params['regul'], params['dropout'], params['hidden'], params['ncomp'] = regul_coef, drop_out_ceof, hidden_size, ncomp
-        param_scores.append([params, scores])
-        logging.info(params)
-        logging.info(scores)
+    ncomps = [100, 300, 900]
+    hidden_sizes = [100, 300, 900]
+    regul_coefs = [0, 1e-5]
+    drop_out_ceofs = [0, 0.5]
+    if args.sqerror: ncomps = [0]
+    for ncomp in ncomps:
+        for hidden_size in hidden_sizes:
+            for regul_coef in regul_coefs:
+                for drop_out_ceof in drop_out_ceofs:                    
+                    np.random.seed(77)
+                    logging.info('regul %f drop %f hidden %d ncomp %d' %(regul_coef, drop_out_ceof, hidden_size, ncomp))
+                    mean_test, median_test, acc_test, mean_dev, median_dev, acc_dev = train(data, regul_coef=regul_coef, dropout_coef=drop_out_ceof, 
+                          hidden_size=hidden_size, ncomp=ncomp, dataset_name=dataset_name, sqerror=args.sqerror)
+                    scores = OrderedDict()
+                    scores['mean_dev'], scores['median_dev'], scores['acc_dev'] = mean_dev, median_dev, acc_dev
+                    scores['mean_test'], scores['median_test'], scores['acc_test'] = mean_test, median_test, acc_test
+                    params = OrderedDict()
+                    params['regul'], params['dropout'], params['hidden'], params['ncomp'] = regul_coef, drop_out_ceof, hidden_size, ncomp
+                    param_scores.append([params, scores])
+                    logging.info(params)
+                    logging.info(scores)
     for param_score in param_scores:
         logging.info(param_score)
         
@@ -661,7 +667,7 @@ def parse_args(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument('-i','--dataset', metavar='str', help='dataset for dialectology', type=str, default='na')
     parser.add_argument('-bucket','--bucket', metavar='int', help='discretisation bucket size', type=int, default=300)
-    parser.add_argument('-batch','--batch', metavar='int', help='SGD batch size', type=int, default=500)
+    parser.add_argument('-batch','--batch', metavar='int', help='SGD batch size', type=int, default=0)
     parser.add_argument('-hid','--hidden', metavar='int', help='Hidden layer size', type=int, default=500)
     parser.add_argument('-mindf','--mindf', metavar='int', help='minimum document frequency in BoW', type=int, default=10)
     parser.add_argument('-d','--dir', metavar='str', help='home directory', type=str, default='./data')
@@ -699,5 +705,9 @@ if __name__ == '__main__':
     if args.tune:
         tune(data, dataset_name, args)
     else:
+        if not args.batch:
+            batch_size = 200 if dataset_name=='cmu' else 1000
+        else:
+            batch_size = args.batch
         train(data, regul_coef=args.regularization, dropout_coef=args.dropout, 
-              hidden_size=args.hidden, autoencoder=args.autoencoder, grid=args.grid, rbf=args.rbf, ncomp=args.ncomp, dataset_name=dataset_name, sqerror=args.sqerror)
+              hidden_size=args.hidden, autoencoder=args.autoencoder, grid=args.grid, rbf=args.rbf, ncomp=args.ncomp, dataset_name=dataset_name, sqerror=args.sqerror, batch_size=batch_size)

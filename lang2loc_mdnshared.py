@@ -95,7 +95,7 @@ def geo_eval(y_true, y_pred, U_eval, classLatMedian, classLonMedian, userLocatio
 
 
 
-def geo_latlon_eval(U_eval, userLocation, latlon_pred, contour_error_on_map=False, use_cluster_median=False):
+def geo_latlon_eval(U_eval, userLocation, latlon_pred, contour_error_on_map=False, use_cluster_median=False, error_analysis=True):
     distances = []
     real_latlons = []
     for i in range(0, len(U_eval)):
@@ -112,6 +112,16 @@ def geo_latlon_eval(U_eval, userLocation, latlon_pred, contour_error_on_map=Fals
     if contour_error_on_map:
         coordinates = np.array(real_latlons)
         utils.contour(coordinates, distances, filename='distance_contour_' + str(np.median(distances)))
+    if error_analysis:
+        top_error_indices = list(reversed(np.argsort(distances).tolist()))[0:20]
+        for _i in top_error_indices:
+            u = U_eval[_i]
+            location = userLocation[user]
+            pred = str(latlon_pred[_i])
+            logging.info('user %s location %s pred %s' %(u, location, pred))
+            logging.info(dl.df_dev.text.values[_i])
+            
+        
     return np.mean(distances), np.median(distances), acc_at_161
 
 def get_cluster_centers(input, n_cluster, raw=True):
@@ -674,7 +684,8 @@ class NNModel_lang2locshared():
         output = self.f_predict(X)
         return output
 
-          
+dl = None
+         
 def load_data(data_home, **kwargs):
     global dl
     bucket_size = kwargs.get('bucket', 500)

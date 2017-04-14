@@ -16,8 +16,8 @@ import matplotlib.pyplot as plt
 from matplotlib import rc
 from matplotlib.mlab import griddata
 from matplotlib.patches import Polygon as MplPolygon
-import seaborn as sns
-sns.set(style="white")
+#import seaborn as sns
+#sns.set(style="white")
 import operator
 from scipy.stats import multivariate_normal
 import argparse
@@ -983,6 +983,7 @@ def visualise_bigaus(params_file, params=None, iter=None, output_type='pdf', **k
     lllon = -124.848974
     urlat =  49.384358
     urlon = -66.885444
+
     if dataset_name == 'world-final':
         lllat = -90
         lllon = -180
@@ -994,7 +995,7 @@ def visualise_bigaus(params_file, params=None, iter=None, output_type='pdf', **k
     urcrnrlat=urlat,
     llcrnrlon=lllon,
     urcrnrlon=urlon,
-    resolution='i', projection='cyl')
+    resolution='c', projection='cyl')
     
     m.drawmapboundary(fill_color = 'white')
     #m.drawcoastlines(linewidth=0.2)
@@ -1007,11 +1008,12 @@ def visualise_bigaus(params_file, params=None, iter=None, output_type='pdf', **k
     urlon, urlat = m(urlon, urlat)
     mlon, mlat = m(*(mus[:,1], mus[:,0]))
     numcols, numrows = 1000, 1000
-    X = np.linspace(mlon.min(), urlon, numcols)
+    X = np.linspace(mlon.min()-2, urlon, numcols)
     Y = np.linspace(lllat, urlat, numrows)
 
     X, Y = np.meshgrid(X, Y)
     m.scatter(mlon, mlat, s=0.2, c='red')
+    
     shp_info = m.readshapefile('./data/us_states_st99/st99_d00','states',drawbounds=True, zorder=0)
     printed_names = []
     ax = plt.gca()
@@ -1019,7 +1021,7 @@ def visualise_bigaus(params_file, params=None, iter=None, output_type='pdf', **k
     ax.yaxis.set_visible(False) 
     for spine in ax.spines.itervalues(): 
         spine.set_visible(False) 
-
+    
     state_names_set = set(short_state_names.values())
     mi_index = 0
     wi_index = 0
@@ -1062,6 +1064,7 @@ def visualise_bigaus(params_file, params=None, iter=None, output_type='pdf', **k
         #ax.add_patch(poly)
         #pdb.set_trace()
         printed_names += [short_name,] 
+    
     for k in xrange(mus.shape[0]):
         #here x is longitude and y is latitude
         #apply softplus to sigmas (to make them positive)
@@ -1081,7 +1084,7 @@ def visualise_bigaus(params_file, params=None, iter=None, output_type='pdf', **k
         #Z = maskoceans(X, Y, Z)
         
 
-        con = m.contour(X, Y, Z, levels=[0.01], linewidths=0.3, colors='darkorange', antialiased=True)
+        con = m.contour(X, Y, Z, levels=[0.01], linewidths=0.5, colors='darkorange', antialiased=True)
         '''
         num_levels = len(con.collections)
         if num_levels > 1:

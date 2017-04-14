@@ -13,6 +13,7 @@ mpl.use('Agg')
 import matplotlib.mlab as mlab
 from matplotlib import ticker
 import matplotlib.pyplot as plt
+from matplotlib import rc
 from matplotlib.mlab import griddata
 from matplotlib.patches import Polygon as MplPolygon
 import seaborn as sns
@@ -56,8 +57,11 @@ import shapefile
 from utils import short_state_names, stop_words, get_us_city_name
 from sklearn.cluster import KMeans, MiniBatchKMeans
 import utils
-logging.basicConfig(format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
-
+logging.basicConfig(format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)   
+rc('font',**{'family':'sans-serif','sans-serif':['Helvetica']})
+## for Palatino and other serif fonts use:
+#rc('font',**{'family':'serif','serif':['Palatino']})
+#rc('text', usetex=True)
 np.random.seed(77)
 random.seed(77)
 
@@ -162,7 +166,7 @@ class NNModel():
 
         if self.nomdn:
             logging.info('adding tanh layer instead of MDN')
-            l_gaus = lasagne.layers.DenseLayer(l_in, num_units=self.hid_size, 
+            l_gaus = lasagne.layers.DenseLayer(l_in, num_units=self.n_gaus_comp, 
                                               nonlinearity=lasagne.nonlinearities.tanh,
                                               W=lasagne.init.GlorotUniform())
         else:
@@ -223,7 +227,7 @@ class NNModel():
             yield inputs[excerpt], targets[excerpt]       
     
     def fit(self, X_train, Y_train, X_dev, Y_dev, X_test, Y_test):
-        model_file = './data/loc2lang_%s_hid%d_gaus%d_out%d.pkl' %(self.dataset_name, self.hid_size, self.n_gaus_comp, self.output_size)
+        model_file = './data/loc2lang_%s_hid%d_gaus%d_out%d_%s.pkl' %(self.dataset_name, self.hid_size, self.n_gaus_comp, self.output_size, str(self.nomdn))
         if self.reload:
             if path.exists(model_file):
                 logging.info('loading the model from %s' %model_file)
@@ -251,7 +255,7 @@ class NNModel():
                     l_trains.append(l_train)
                 l_train = np.mean(l_trains)
                 l_val = self.f_val(X_dev, Y_dev)
-                if l_val < best_val_loss: #and (best_val_loss - l_val) > (0.0001 * l_val):
+                if l_val < best_val_loss and (best_val_loss - l_val) > (0.0001 * l_val):
                     best_params = lasagne.layers.get_all_param_values(self.l_out)
                     best_val_loss = l_val
                     if not self.nomdn:
@@ -520,12 +524,29 @@ def state_dialect_words(loc_train, vocab, model, N=1000):
     random.shuffle(locs)
     locs = locs[0: N]
     loc_state = {}
-    state_indices = defaultdict(list)
+    vocabset = set(vocab)
+    state_indices = defaultdict(set)
+    dialect_indices = defaultdict(set)
+    dialect_states = utils.dialect_state
+    state_dialects = defaultdict(set)
+    new_dialect_states = defaultdict(set)
+    for dialect, states in dialect_states.iteritems():
+        dialect = dialect.lower()
+        states = set([s.lower() for s in states])
+        new_dialect_states[dialect] = states
+        for state in states:
+            state_dialects[state].add(dialect)
+    dialect_states = new_dialect_states
+    
     for i, loc in enumerate(locs):
         state = all_loc_state[loc]
         loc_state[loc] = state
-        state_indices[state].append(i)
-        
+        state_indices[state].add(i)
+        dialects = dialect_states[state]
+        for dialect in dialects:
+            dialect_indices[dialect].add(i)
+        dialect_indices[state].add(i)
+    
     locs = np.array(locs).astype('float32')
 
     sampled_preds = []
@@ -536,50 +557,55 @@ def state_dialect_words(loc_train, vocab, model, N=1000):
     sampled_predictions = np.vstack(tuple(sampled_preds))
 
     #sampled_predictions = model.predict(locs)
-    states = set([state.lower() for state in loc_state.values()])
+    point_dialects = set([state.lower() for state in loc_state.values()])
+    #add related dialects for each state
+    for state, dls in state_dialects.iteritems():
+        for d in dls:
+            point_dialects.add(d)
     word_dialect = get_dare_words()
-    dialects = set(word_dialect.values())
-    covered_dialects = dialects & states
+    word_dialect = {w:dialect for w, dialect in word_dialect.iteritems() if w in vocabset}
+    dare_dialects = set(word_dialect.values())
+    covered_dialects = dare_dialects & point_dialects
     logprobs = np.log(sampled_predictions)
     #logprobs = sampled_predictions
-    state_count = [(s, len(indices)) for s, indices in state_indices.iteritems()]
-    logging.info(state_count)
+    dialect_count = [(d, len(indices)) for d, indices in dialect_indices.iteritems()]
+    logging.info(dialect_count)
     global_mean_logprobs = np.mean(logprobs, axis=0)
-    state_ranking = {}
-    for state in covered_dialects:
-        state_loc_indices = state_indices[state]
-        state_logprobs = logprobs[state_loc_indices, :]
-        state_mean_logprobs = np.mean(state_logprobs, axis=0)
-        state_normalized_logprobs = state_mean_logprobs - global_mean_logprobs
-        sorted_vocab_indices = np.argsort(state_normalized_logprobs)
+    dialect_ranking = {}
+    for dialect in covered_dialects:
+        dialect_loc_indices = sorted(dialect_indices[dialect])
+        dialect_logprobs = logprobs[dialect_loc_indices, :]
+        dialect_mean_logprobs = np.mean(dialect_logprobs, axis=0)
+        dialect_normalized_logprobs = dialect_mean_logprobs - global_mean_logprobs
+        sorted_vocab_indices = np.argsort(dialect_normalized_logprobs)
         sorted_vocab = np.array(vocab)[sorted_vocab_indices].tolist()
-        state_ranking[state] = list(reversed(sorted_vocab))
-    printable_state_ranking = {s:rank[0:100] for s, rank in state_ranking.iteritems()}
-    with open('./data/state_ranking_' + str(len(vocab)) + '.json', 'w') as fout:
-        json.dump(printable_state_ranking, fout)
+        dialect_ranking[dialect] = list(reversed(sorted_vocab))
+    printable_dialect_ranking = {d:rank[0:100] for d, rank in dialect_ranking.iteritems()}
+    with open('./data/dialect_ranking_' + str(len(vocab)) + '.json', 'w') as fout:
+        json.dump(printable_dialect_ranking, fout)
     #recall at k for each state
-    #intervals = [5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 2e-2, 5e-2]
+    intervals = [0.01, 0.05, 0.1, 0.15, 0.2]
     #ks = [max(1, int(i * len(vocab))) for i in intervals]
-    ks = [100, 500, 1000, 2000, 4000, 8000, 16000, len(vocab)]
+    ks = [int(i * len(vocab)) for i in intervals]
     k_recall = defaultdict(list)
     oracle_k_recall = defaultdict(list)
-    for state in covered_dialects:
-        state_dare_words = set([w for w, s in word_dialect.iteritems() if s == state])
-        retrieved_words = state_ranking[state]
-        oracle_retrieved = list(set(retrieved_words) & state_dare_words)
-        logging.info('state DARE worlds in vocab: %d' %len(oracle_retrieved))
+    for dialect in covered_dialects:
+        dialect_dare_words = set([w for w, d in word_dialect.iteritems() if d == dialect])
+        retrieved_words = dialect_ranking[dialect]
+        oracle_retrieved = list(set(retrieved_words) & dialect_dare_words)
+        logging.info('dialect %s DARE worlds in vocab: %d' %(dialect, len(oracle_retrieved)))
         #recall at k
         for k in ks:
             words_at_k = set(retrieved_words[0:k])
             #number of correct retrievals
-            correct = len(words_at_k & state_dare_words)
-            recall_at_k = float(correct) / len(state_dare_words)
+            correct = len(words_at_k & dialect_dare_words)
+            recall_at_k = float(correct) / len(dialect_dare_words)
             k_recall[k].append(recall_at_k)
             
             
             oracle_words_at_k = set(oracle_retrieved[0:k])
-            oracle_correct = len(oracle_words_at_k & state_dare_words)
-            oracle_recall_at_k = float(oracle_correct) / len(state_dare_words)
+            oracle_correct = len(oracle_words_at_k & dialect_dare_words)
+            oracle_recall_at_k = float(oracle_correct) / len(dialect_dare_words)
             oracle_k_recall[k].append(oracle_recall_at_k)
     
     for k in ks:
@@ -633,9 +659,9 @@ def train(data, **kwargs):
                     logging.info('set all mus to the center of USA with a little noise')
                     mus[i, 0] = 39.5 + np.random.uniform(low=-3, high=+3)
                     mus[i, 1] = -98.35 + np.random.uniform(low=-3, high=+3)
-            mus = mus.astype('float32')
-            raw_stds = None
-            raw_cors = None
+        mus = mus.astype('float32')
+        raw_stds = None
+        raw_cors = None
     
     model = NNModel(n_epochs=1000, batch_size=batch_size, regul_coef=regul, 
                     input_size=input_size, output_size=output_size, hid_size=hid_size, 
@@ -751,9 +777,6 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
         urlat = 90
         urlon = 180
         
-    fig = plt.figure(figsize=(2, 1.25))
-    grid_transform = kwargs.get('grid', False)
-    ax = fig.add_subplot(111, axisbg='w', frame_on=False)
     grid_interpolation_method = 'cubic'
     logging.info('interpolation: ' + grid_interpolation_method)
     region_words = {
@@ -784,8 +807,8 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
     
     
     topk_words = []    
-    topk_words.extend(word_dialect.keys())
-    dialect_words = ['jawn', 'paczki', 'euchre', 'brat', 'toboggan', 'brook', 'grinder', 'yall', 'yinz', 'youze', 'hella', 'yeen']
+    #topk_words.extend(word_dialect.keys())
+    dialect_words = ['hella', 'yall', 'jawn', 'paczki', 'euchre', 'brat', 'toboggan', 'brook', 'grinder', 'yinz', 'youze', 'yeen']
     topk_words.extend(dialect_words)
     custom_words = ['springfield', 'columbia', 'nigga', 'niqqa', 'bamma', 'cooter', 'britches', 'yapper', 'younguns', 'hotdish', 
                     'schnookered', 'bubbler', 'betcha', 'dontcha']
@@ -818,6 +841,9 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
     wi = 0
     for word in topk_words:
         if word in vocabset:
+            fig = plt.figure(figsize=(5, 4))
+            grid_transform = kwargs.get('grid', False)
+            ax = fig.add_subplot(111, axisbg='w', frame_on=False)
             logging.info('%d mapping %s' %(wi, word))
             wi += 1
             index = vocab.index(word)
@@ -887,7 +913,7 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
                 #x, y = np.median(np.array(state), axis=0)
                 # You have to align x,y manually to avoid overlapping for little states
                 if draw_state_name:
-                    plt.text(x+.1, y, short_name, ha="center", fontsize=3)
+                    plt.text(x+.1, y, short_name, ha="center", fontsize=8)
                 #ax.add_patch(poly)
                 #pdb.set_trace()
                 printed_names += [short_name,] 
@@ -914,17 +940,18 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
             #con = m.contour(xi, yi, data, 3, cmap=plt.get_cmap('YlOrRd'), linewidths=1)
             #con = m.contour(x, y, z, 3, cmap=plt.get_cmap('YlOrRd'), tri=True, linewidths=1)
             #conf = m.contourf(x, y, z, 3, cmap=plt.get_cmap('coolwarm'), tri=True)
-            cbar = m.colorbar(con,location='right',pad="3%")
+            cbar = m.colorbar(con,location='right',pad="2%")
             #plt.setp(cbar.ax.get_yticklabels(), visible=False)
             #cbar.ax.tick_params(axis=u'both', which=u'both',length=0)
             #cbar.ax.set_yticklabels(['low', 'high'])
             tick_locator = ticker.MaxNLocator(nbins=9)
             cbar.locator = tick_locator
             cbar.update_ticks()
-            cbar.ax.tick_params(labelsize=4) 
-            cbar.set_label('logprob')
+            cbar.ax.tick_params(labelsize=11) 
+            cbar.ax.yaxis.set_tick_params(pad=2)
+            cbar.set_label('logprob', size=11)
             for line in cbar.lines: 
-                line.set_linewidth(20)
+                line.set_linewidth(10)
             
             #read countries for world dataset with more than 100 number of users
             with open('./data/country_count.json', 'r') as fin:
@@ -938,11 +965,12 @@ def contour_me(info_file='coords-preds-vocab429200_1000.pkl', **kwargs):
                 poly = MplPolygon(state,facecolor='gray',edgecolor='gray')
                 ax.add_patch(poly)
             #plt.title('term: ' + word )
-            plt.savefig(map_dir + word + '_' + grid_interpolation_method +  '.pdf', dpi=200)
+            plt.tight_layout()
+            plt.savefig(map_dir + word + '_' + grid_interpolation_method +  '.pdf', bbox_inches='tight')
             plt.close()
             del m
 
-  
+
 def visualise_bigaus(params_file, params=None, iter=None, output_type='pdf', **kwargs):
     if params == None:
         with open(params_file, 'rb') as fin:
@@ -1053,7 +1081,7 @@ def visualise_bigaus(params_file, params=None, iter=None, output_type='pdf', **k
         #Z = maskoceans(X, Y, Z)
         
 
-        con = m.contour(X, Y, Z, levels=[0.01], linewidths=1.0, colors='darkorange', antialiased=True)
+        con = m.contour(X, Y, Z, levels=[0.01], linewidths=0.3, colors='darkorange', antialiased=True)
         '''
         num_levels = len(con.collections)
         if num_levels > 1:

@@ -493,7 +493,7 @@ def load_data(data_home, **kwargs):
                     celebrity_threshold=celebrity_threshold, one_hot_labels=one_hot_label, 
                     mindf=mindf, maxdf=0.1, norm='l2', idf=True, btf=True, tokenizer=None, subtf=True, stops=stop_words, token_pattern=r'(?u)(?<![@])\b\w+\b')
     dl.load_data()
-    #dl.assignClasses()
+    
     dl.tfidf()
     U_test = dl.df_test.index.tolist()
     U_dev = dl.df_dev.index.tolist()
@@ -501,6 +501,7 @@ def load_data(data_home, **kwargs):
     X_train = dl.X_train.astype(dtype)
     X_dev = dl.X_dev.astype(dtype)
     X_test = dl.X_test.astype(dtype)
+    #dl.assignClasses()
     #Y_test = dl.test_classes.astype('int32')
     #Y_train = dl.train_classes.astype('int32')
     #Y_dev = dl.dev_classes.astype('int32')
@@ -607,7 +608,7 @@ def train(data, **kwargs):
                 latlon_preds.append(latlon_pred)
             latlon_pred = np.vstack(tuple(latlon_preds))
     logging.info('dev results:')
-    mean_dev , median_dev, acc_dev = geo_latlon_eval(U_dev, userLocation, latlon_pred, contour_error_on_map=True)
+    mean_dev , median_dev, acc_dev = geo_latlon_eval(U_dev, userLocation, latlon_pred, contour_error_on_map=False)
 
     logging.info('test results:')
     if model.sqerror:

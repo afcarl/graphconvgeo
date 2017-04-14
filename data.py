@@ -258,7 +258,7 @@ class DataLoader():
         self.bucket_size = bucket_size
         self.encoding = encoding
         self.celebrity_threshold = celebrity_threshold
-        self.one_host_labels = one_hot_labels
+        self.one_hot_labels = one_hot_labels
         self.mindf = mindf
         self.maxdf = maxdf
         self.norm = norm
@@ -419,7 +419,7 @@ class DataLoader():
         self.test_classes = nnbr.kneighbors(test_locs, n_neighbors=1, return_distance=False)[:, 0]
 
         self.train_classes = clusters
-        if self.one_host_labels:
+        if self.one_hot_labels:
             num_labels = np.max(self.train_classes) + 1
             y_train = np.zeros((len(self.train_classes), num_labels), dtype=np.float32)
             y_train[np.arange(len(self.train_classes)), self.train_classes] = 1

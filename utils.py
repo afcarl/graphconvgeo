@@ -92,6 +92,47 @@ short_state_names = {
 
 stop_words = ['the', 'of', 'and', 'to', 'a', 'in', 'for', 'is', 'on', 'that', 'by', 'this', 'with', 'i', 'you', 'it', 'not', 'or', 'be', 'are', 'from', 'at', 'as', 'your', 'all', 'have', 'new', 'more', 'an', 'was', 'we', 'will', 'home', 'can', 'us', 'about', 'if', 'page', 'my', 'has', 'search', 'free', 'but', 'our', 'one', 'other', 'do', 'no', 'information', 'time', 'they', 'site', 'he', 'up', 'may', 'what', 'which', 'their', 'news', 'out', 'use', 'any', 'there', 'see', 'only', 'so', 'his', 'when', 'contact', 'here', 'business', 'who', 'web', 'also', 'now', 'help', 'get', 'pm', 'view', 'online', 'c', 'e', 'first', 'am', 'been', 'would', 'how', 'were', 'me', 's', 'services', 'some', 'these', 'click', 'its', 'like', 'service', 'x', 'than', 'find', 'price', 'date', 'back', 'top', 'people', 'had', 'list', 'name', 'just', 'over', 'state', 'year', 'day', 'into', 'email', 'two', 'health', 'n', 'world', 're', 'next', 'used', 'go', 'b', 'work', 'last', 'most', 'products', 'music', 'buy', 'data', 'make', 'them', 'should', 'product', 'system', 'post', 'her', 'city', 't', 'add', 'policy', 'number', 'such', 'please', 'available', 'copyright', 'support', 'message', 'after', 'best', 'software', 'then', 'jan', 'good', 'video', 'well', 'd', 'where', 'info', 'rights', 'public', 'books', 'high', 'school', 'through', 'm', 'each', 'links', 'she', 'review', 'years', 'order', 'very', 'privacy', 'book', 'items', 'company', 'r', 'read', 'group', 'sex', 'need', 'many', 'user', 'said', 'de', 'does', 'set', 'under', 'general', 'research', 'university', 'january', 'mail', 'full', 'map', 'reviews', 'program', 'life']
 
+
+dialect_state = {
+                 
+        'atlantic':["Connecticut", "Delaware", "Florida", "Georgia", "Maine", "Maryland", "Massachusetts", "New Hampshire", "New Jersey", "New York", "North Carolina", "Pennsylvania", "Rhode Island", "South Carolina", "Vermont", "Virginia", "Washington, DC"],
+        'central':["Arkansas", "Kansas", "Missouri", "Nebraska", "Oklahoma"],
+        'central atlantic':["Delaware", "Washington, DC"],
+        'delmarva':["Delaware"],
+        'desert southwest':["Arizona", "New Mexico"],
+        'great lakes':['michigan', 'minnesota', 'wisconsin'],
+        'golf states':['alabama', 'florida', 'louisiana', 'mississippi'],
+        'inland north':['michigan', 'montana', 'new york', 'washington', 'minnesota', 'north dakota', 'oregon', 'wisconsin'],
+        'inland south':["Alabama", "Kentucky", "Mississippi", "Tennessee"],
+        'lower mississippi valley':['arkansas', 'mississippi', 'louisiana'],
+        'middle atlantic':['maryland', 'south carolina', 'washington, dc', 'north carolina', 'virginia'],
+        'midland':['kentucky', 'nebraska', 'tennessee'],
+        'mississippi valley':["Arkansas", "Illinois", "Iowa", "Louisiana", "Minnesota", "Mississippi", "Missouri", "Wisconsin"],
+        'mississippi-ohio valley':["Illinois", "Indiana", "Iowa", "Kentucky", "Minnesota", "Missouri", "Ohio", "Wisconsin"],
+        'new england':["Connecticut", "Maine", "Massachusetts", "New Hampshire", "Rhode Island", "Vermont"],    
+        'north':["Connecticut", "Maine", "Massachusetts", "Michigan", "Minnesota", "Montana", "New Hampshire", "New York", "North Dakota", "Oregon", "Rhode Island", "Vermont", "Washington", "Wisconsin"],
+        'north atlantic':["Connecticut", "Maine", "Massachusetts", "New Hampshir", "Rhode Island", "Vermont"],
+        'north central':["Illinois", "Indiana", "Kentucky", "Michigan", "Ohio", "Wisconsin"],
+        'north midland':['nebraska'],
+        'northeast':["Connecticut", "Maine", "Massachusetts", "New Hampshire", "New Jersey", "New York", "Rhode Island", "Vermont"],
+        'northwest':["Idaho", "Oregon", "Washington", "Montana", "Wyoming"],
+        'ohio valley':['kentucky'],
+        'pacific':['california', 'washington', 'oregon'],
+        'pacific northwest':['washington', 'oregon'],
+        'plains states':['nebraska', 'kansas'],
+        'rocky mountains':['montana', 'utah', 'idaho', 'nevada', 'wyoming'],
+        'south':['florida', 'washington, dc', 'alabama', 'georgia', 'louisiana', 'mississippi', 'north carolina', 'south carolina'],
+        'south atlantic':['florida', 'georgia', 'north carolina', 'south carolina'],
+        'south midland':['kentucky', 'arkansas', 'tennessee', 'washington, dc', 'west virginia'],
+        'southeast':['alabama', 'georgia', 'north carolina', 'tennessee', 'north carolina', 'mississippi', 'florida'],
+        'southwest':['arizona', 'new mexico', 'texas', 'oklohama'],
+        'upper midwest':['iowa', 'nebraska', 'south dakota', 'north dakota', 'minnesota'],
+        'upper mississippi valley':['iowa', 'minnesota', 'wisconsin', 'illinois', 'missouri'],
+        'west':["Arizona", "California", "Colorado", "Idaho", "Montana", "Nevada", "New Mexico", "Oregon", "Utah", "Washington", "Wyoming"],
+        'west midland':['iowa', 'ohio', 'arkansas', 'tennessee', 'west virginia', 'illinois', 'indiana', 'kentucky', 'nebraska', ]     
+                 
+                 }
+
 def get_us_city_name():
     #we might exclude words in city names
     all_us_city_names = set()
@@ -161,6 +202,16 @@ def get_state_from_coordinates(coordnates):
 
 
 def contour(coordinates, scores, world=False, filename="contour", do_contour = False, **kwargs):
+    #with open('./data/coordinate_socres.pkl', 'wb') as fout:
+    #    pickle.dump((coordinates, scores), fout)
+    with open('./data/coor_score_239.pkl', 'rb') as fin:
+        coordinates, scores = pickle.load(fin)
+    from matplotlib import rc
+    rc('font',**{'family':'sans-serif','sans-serif':['Helvetica']})
+    ## for Palatino and other serif fonts use:
+    #rc('font',**{'family':'serif','serif':['Palatino']})
+    rc('text', usetex=True)
+    scores = np.array(scores)
     lllat = 24.396308
     lllon = -124.848974
     urlat =  49.384358
@@ -171,10 +222,10 @@ def contour(coordinates, scores, world=False, filename="contour", do_contour = F
         urlat = 90
         urlon = 180
         
-    fig = plt.figure(figsize=(10, 8))
+    fig = plt.figure(figsize=(2.5, 2))
     grid_transform = kwargs.get('grid', False)
     ax = fig.add_subplot(111, axisbg='w', frame_on=False)
-    grid_interpolation_method = 'cubic'
+    grid_interpolation_method = 'nearest'
  
     
    
@@ -243,14 +294,14 @@ def contour(coordinates, scores, world=False, filename="contour", do_contour = F
         #x, y = np.median(np.array(state), axis=0)
         # You have to align x,y manually to avoid overlapping for little states
         if draw_state_name:
-            plt.text(x+.1, y, short_name, ha="center", fontsize=5)
+            plt.text(x+.1, y, short_name, ha="center", fontsize=4)
         #ax.add_patch(poly)
         #pdb.set_trace()
         printed_names += [short_name,] 
     mlon, mlat = m(*(coordinates[:,1], coordinates[:,0]))
     # grid data
     if do_contour:
-        numcols, numrows = 1000, 1000
+        numcols, numrows = 2000, 2000
         xi = np.linspace(mlon.min(), mlon.max(), numcols)
         yi = np.linspace(mlat.min(), mlat.max(), numrows)
     
@@ -270,7 +321,7 @@ def contour(coordinates, scores, world=False, filename="contour", do_contour = F
         con = m.contourf(xi, yi, data, cmap=plt.get_cmap('YlOrRd'))
     else:
         cmap=plt.get_cmap('YlOrRd')
-        con = m.scatter(mlon, mlat, c=scores, s=5, cmap=cmap )
+        con = m.scatter(mlon, mlat, c=scores, s=3, cmap=cmap )
     #con = m.contour(xi, yi, data, 3, cmap=plt.get_cmap('YlOrRd'), linewidths=1)
     #con = m.contour(x, y, z, 3, cmap=plt.get_cmap('YlOrRd'), tri=True, linewidths=1)
     #conf = m.contourf(x, y, z, 3, cmap=plt.get_cmap('coolwarm'), tri=True)
@@ -282,7 +333,9 @@ def contour(coordinates, scores, world=False, filename="contour", do_contour = F
     #cbar.locator = tick_locator
     #cbar.update_ticks()
     cbar.ax.tick_params(labelsize=6) 
-    cbar.set_label('error in km')
+    cbar.ax.xaxis.set_tick_params(pad=0)
+    cbar.ax.yaxis.set_tick_params(pad=0)
+    cbar.set_label('error in km', size=8, labelpad=1)
     for line in cbar.lines: 
         line.set_linewidth(20)
     
@@ -298,14 +351,16 @@ def contour(coordinates, scores, world=False, filename="contour", do_contour = F
         poly = MplPolygon(state,facecolor='gray',edgecolor='gray')
         ax.add_patch(poly)
     #plt.title('term: ' + word )
-    plt.savefig('./maps/' + filename +  '.pdf')
+    plt.tight_layout()
+    plt.savefig('./maps/' + filename +  '.pdf', bbox_inches='tight')
     plt.close()
     del m
 
     
 if __name__ == '__main__':
     #retrieve_location_from_coordinates()
-    get_state_from_coordinates(coordnates=None)
+    #get_state_from_coordinates(coordnates=None)
+    contour(coordinates=None, scores=None, world=False, filename='errormap', do_contour=True)
         
         
     

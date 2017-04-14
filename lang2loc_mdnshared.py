@@ -95,7 +95,7 @@ def geo_eval(y_true, y_pred, U_eval, classLatMedian, classLonMedian, userLocatio
 
 
 
-def geo_latlon_eval(U_eval, userLocation, latlon_pred, contour_error_on_map=False):
+def geo_latlon_eval(U_eval, userLocation, latlon_pred, contour_error_on_map=False, use_cluster_median=False):
     distances = []
     real_latlons = []
     for i in range(0, len(U_eval)):
@@ -489,8 +489,8 @@ class NNModel_lang2locshared():
             logging.info('regul coefficient for output and hidden lasagne_layers is ' + str(self.regul_coef))
             l1_penalty = lasagne.regularization.regularize_layer_params(self.l_pi_out, l1) * regul_coef_out * l1_share_out
             l2_penalty = lasagne.regularization.regularize_layer_params(self.l_pi_out, l2) * regul_coef_out * (1-l1_share_out)
-            l1_penalty = lasagne.regularization.regularize_layer_params(l_hid_text, l1) * regul_coef_hid * l1_share_hid
-            l2_penalty = lasagne.regularization.regularize_layer_params(l_hid_text, l2) * regul_coef_hid * (1-l1_share_hid)
+            l1_penalty += lasagne.regularization.regularize_layer_params(l_hid_text, l1) * regul_coef_hid * l1_share_hid
+            l2_penalty += lasagne.regularization.regularize_layer_params(l_hid_text, l2) * regul_coef_hid * (1-l1_share_hid)
 
 
             loss = loss + l1_penalty + l2_penalty
@@ -552,8 +552,8 @@ class NNModel_lang2locshared():
             logging.info('regul coefficient for output and hidden lasagne_layers is ' + str(self.regul_coef))
             l1_penalty = lasagne.regularization.regularize_layer_params(self.l_out, l1) * regul_coef_out * l1_share_out
             l2_penalty = lasagne.regularization.regularize_layer_params(self.l_out, l2) * regul_coef_out * (1-l1_share_out)
-            l1_penalty = lasagne.regularization.regularize_layer_params(l_hid_text, l1) * regul_coef_hid * l1_share_hid
-            l2_penalty = lasagne.regularization.regularize_layer_params(l_hid_text, l2) * regul_coef_hid * (1-l1_share_hid)
+            l1_penalty += lasagne.regularization.regularize_layer_params(l_hid_text, l1) * regul_coef_hid * l1_share_hid
+            l2_penalty += lasagne.regularization.regularize_layer_params(l_hid_text, l2) * regul_coef_hid * (1-l1_share_hid)
 
 
             loss = loss + l1_penalty + l2_penalty
@@ -659,9 +659,9 @@ class NNModel_lang2locshared():
             lasagne.layers.set_all_param_values(self.l_out, best_params)
         else:
             lasagne.layers.set_all_param_values(self.l_pi_out, best_params)
-        #logging.info('dumping the model...')
-        #with open(model_file, 'wb') as fout:
-        #    pickle.dump(best_params, fout)
+        logging.info('dumping the model...')
+        with open(model_file, 'wb') as fout:
+            pickle.dump(best_params, fout)
                 
     def predict(self, X):
         mus_eval, sigmas_eval, corxy_eval, pis_eval = self.f_predict(X)
@@ -675,13 +675,9 @@ class NNModel_lang2locshared():
         return output
 
           
-
-
-
-    
-          
 def load_data(data_home, **kwargs):
-    bucket_size = kwargs.get('bucket', 300)
+    global dl
+    bucket_size = kwargs.get('bucket', 500)
     dataset_name = kwargs.get('dataset_name')
     encoding = kwargs.get('encoding', 'utf-8')
     celebrity_threshold = kwargs.get('celebrity', 10)  
@@ -696,7 +692,7 @@ def load_data(data_home, **kwargs):
                     celebrity_threshold=celebrity_threshold, one_hot_labels=one_hot_label, 
                     mindf=mindf, maxdf=0.1, norm='l2', idf=True, btf=True, tokenizer=None, subtf=True, stops=stop_words, token_pattern=r'(?u)(?<![@])\b\w+\b')
     dl.load_data()
-    #dl.assignClasses()
+    
     dl.tfidf()
     U_test = dl.df_test.index.tolist()
     U_dev = dl.df_dev.index.tolist()
@@ -704,6 +700,7 @@ def load_data(data_home, **kwargs):
     X_train = dl.X_train.astype(dtype)
     X_dev = dl.X_dev.astype(dtype)
     X_test = dl.X_test.astype(dtype)
+    #dl.assignClasses()
     #Y_test = dl.test_classes.astype('int32')
     #Y_train = dl.train_classes.astype('int32')
     #Y_dev = dl.dev_classes.astype('int32')
@@ -794,7 +791,7 @@ def train(data, **kwargs):
     model = NNModel_lang2locshared(n_epochs=10000, batch_size=batch_size, regul_coef=regul, 
                     input_size=input_size, output_size=output_size, hid_size=hid_size, 
                     drop_out=True, dropout_coef=dropout_coef, early_stopping_max_down=max_down, 
-                    input_sparse=True, reload=False, ncomp=ncomp, autoencoder=autoencoder, sqerror=sqerror,
+                    input_sparse=True, reload=True, ncomp=ncomp, autoencoder=autoencoder, sqerror=sqerror,
                     mus=mus, sigmas=raw_stds, corxy=raw_cors, dataset_name=dataset_name)
 
     model.fit(data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[11])
@@ -816,7 +813,7 @@ def train(data, **kwargs):
                 latlon_preds.append(latlon_pred)
             latlon_pred = np.vstack(tuple(latlon_preds))
     logging.info('dev results:')
-    mean , median, acc = geo_latlon_eval(data[7], data[11], latlon_pred, contour_error_on_map=True)
+    mean , median, acc = geo_latlon_eval(data[7], data[11], latlon_pred, contour_error_on_map=False)
     
     if model.sqerror:
         latlon_pred = model.predict_regression(data[4])
@@ -863,6 +860,37 @@ def tune(data, dataset_name, args, num_iter=100):
                     param_scores.append([params, scores])
                     logging.info(params)
                     logging.info(scores)
+    for param_score in param_scores:
+        logging.info(param_score)
+
+def fine_tune(data, dataset_name, args, num_iter=100):
+    logging.info('tuning over %s' %dataset_name)
+    param_scores = []
+    random.seed()
+    if dataset_name == 'cmu':
+        ncomp = 300
+        hidden_size = 100
+    else:
+        ncomp = 900
+        hidden_size = 900
+    for regul_coef in [0, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3]:
+        for drop_out_ceof in [0, 0.3, 0.4, 0.5, 0.6, 0.7]:
+            np.random.seed(77)    
+            logging.info('regul %f drop %f hidden %d ncomp %d' %(regul_coef, drop_out_ceof, hidden_size, ncomp))
+            try:
+                mean, median, acc, mean_test, median_test, acc_test = train(data, regul_coef=regul_coef, dropout_coef=drop_out_ceof, hidden_size=hidden_size, ncomp=ncomp, dataset_name=dataset_name, sqerror=args.sqerror)
+            except:
+                logging.info('exception occurred')
+                continue
+    
+            scores = OrderedDict()
+            scores['mean_dev'], scores['median_dev'], scores['acc_dev'] = mean, median, acc
+            scores['mean_test'], scores['median_test'], scores['acc_test'] = mean_test, median_test, acc_test
+            params = OrderedDict()
+            params['regul'], params['dropout'], params['hidden'], params['ncomp'] = regul_coef, drop_out_ceof, hidden_size, ncomp
+            param_scores.append([params, scores])
+            logging.info(params)
+            logging.info(scores)
     for param_score in param_scores:
         logging.info(param_score)
         

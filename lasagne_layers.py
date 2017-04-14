@@ -131,8 +131,8 @@ class DiagonalBivariateGaussianLayer(Layer):
         
         self.sigmas_init = np.abs(np.random.randn(self.num_units, 2).reshape((self.num_units,2))).astype('float32')
         
-        self.mus = self.add_param(self.mus_init, self.mus_init.shape, name='mus')
-        self.sigmas = self.add_param(self.sigmas_init, self.sigmas_init.shape, name='sigmas')
+        self.mus = self.add_param(self.mus_init, self.mus_init.shape, name='mus', regularizable=False)
+        self.sigmas = self.add_param(self.sigmas_init, self.sigmas_init.shape, name='sigmas', regularizable=False)
 
     def get_output_shape_for(self, input_shape):
         return (input_shape[0], self.num_units)        
@@ -169,16 +169,17 @@ class BivariateGaussianLayer(Layer):
         if sigmas is not None:
             sigmas_init = sigmas
         else:
-            sigmas_init = np.array([10, 10]).astype('float32') * np.abs(np.random.randn(self.num_units, 2).reshape((self.num_units,2))).astype('float32')
+            #sigmas_init = np.array([10, 10]).astype('float32') * np.abs(np.random.randn(self.num_units, 2).reshape((self.num_units,2))).astype('float32')
+            sigmas_init = np.array([10, 10]).astype('float32') * np.ones(shape=(self.num_units, 2)).astype('float32')
         
         if corxy is not None:
             corxy_init = corxy
         else:
             corxy_init = np.random.randn(self.num_units,).reshape((self.num_units,)).astype('float32')
         
-        self.mus = self.add_param(mus_init, mus_init.shape, name='mus')
-        self.sigmas = self.add_param(sigmas_init, sigmas_init.shape, name='sigmas')
-        self.corxy = self.add_param(corxy_init, corxy_init.shape, name='corxy')
+        self.mus = self.add_param(mus_init, mus_init.shape, name='mus', regularizable=False)
+        self.sigmas = self.add_param(sigmas_init, sigmas_init.shape, name='sigmas', regularizable=False)
+        self.corxy = self.add_param(corxy_init, corxy_init.shape, name='corxy', regularizable=False)
 
     def get_output_shape_for(self, input_shape):
         return (input_shape[0], self.num_units)        
@@ -235,9 +236,9 @@ class MDNSharedParams(DenseLayer):
         else:
             corxy_init = np.random.randn(self.num_units,).reshape((self.num_units,)).astype('float32')
         
-        self.mus = self.add_param(mus_init, mus_init.shape, name='mus')
-        self.sigmas = self.add_param(sigmas_init, sigmas_init.shape, name='sigmas')
-        self.corxy = self.add_param(corxy_init, corxy_init.shape, name='corxy')
+        self.mus = self.add_param(mus_init, mus_init.shape, name='mus', regularizable=False)
+        self.sigmas = self.add_param(sigmas_init, sigmas_init.shape, name='sigmas', regularizable=False)
+        self.corxy = self.add_param(corxy_init, corxy_init.shape, name='corxy', regularizable=False)
 
     def get_output_shape_for(self, input_shape):
         return (input_shape[0], self.num_units)        

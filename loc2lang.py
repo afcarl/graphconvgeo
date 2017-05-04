@@ -167,7 +167,7 @@ class NNModel():
         if self.nomdn:
             logging.info('adding tanh layer instead of MDN')
             l_gaus = lasagne.layers.DenseLayer(l_in, num_units=self.n_gaus_comp, 
-                                              nonlinearity=lasagne.nonlinearities.tanh,
+                                              nonlinearity=lasagne.nonlinearities.rectify,
                                               W=lasagne.init.GlorotUniform())
         else:
             logging.info('adding %d-comp bivariate gaussian layer...' %self.n_gaus_comp)
@@ -177,7 +177,7 @@ class NNModel():
 
         if self.hid_size:
             l_hid = lasagne.layers.DenseLayer(l_gaus, num_units=self.hid_size, 
-                                              nonlinearity=lasagne.nonlinearities.tanh,
+                                              nonlinearity=lasagne.nonlinearities.rectify,
                                               W=lasagne.init.GlorotUniform())
         else:
             l_hid = l_gaus
